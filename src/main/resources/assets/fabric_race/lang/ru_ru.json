@@ -1,0 +1,51 @@
+{
+  "fabric_race.title": "Спидран Гонка",
+  "fabric_race.seed": "Сид",
+  "fabric_race.time": "Время",
+  "fabric_race.stage": "Этап",
+  "fabric_race.world": "Мир",
+  "fabric_race.progress": "Прогресс этапов",
+  "fabric_race.other_players": "Другие игроки",
+  
+  "fabric_race.stage.overworld": "Оверворлд",
+  "fabric_race.stage.nether": "Нижний мир",
+  "fabric_race.stage.bastion": "Бастион",
+  "fabric_race.stage.fortress": "Крепость",
+  "fabric_race.stage.end": "Энд",
+  "fabric_race.stage.complete": "Завершено",
+  
+  "fabric_race.world.overworld": "Оверворлд",
+  "fabric_race.world.nether": "Нижний мир",
+  "fabric_race.world.end": "Энд",
+  
+  "fabric_race.command.start": "Гонка началась на сиде: %s",
+  "fabric_race.command.stop": "Гонка остановлена",
+  "fabric_race.command.lobby": "Все игроки возвращены в лобби",
+  "fabric_race.command.setup": "Сид установлен: %s",
+  "fabric_race.command.status": "=== Статус гонки ===",
+  "fabric_race.command.spectate": "Наблюдаете за игроком: %s",
+  "fabric_race.command.teleport": "Телепортированы к игроку: %s",
+  "fabric_race.command.leaderboard": "=== Таблица лидеров ===",
+  "fabric_race.command.help": "=== Команды гонки ===",
+  
+  "fabric_race.error.race_active": "Гонка уже активна!",
+  "fabric_race.error.race_inactive": "Гонка не активна!",
+  "fabric_race.error.no_seed": "Сначала установите сид командой /race setup <seed>",
+  "fabric_race.error.player_not_found": "Игрок не найден: %s",
+  "fabric_race.error.players_only": "Только игроки могут выполнять эту команду",
+  
+  "fabric_race.help.start": "/race start - Начать гонку",
+  "fabric_race.help.stop": "/race stop - Остановить гонку",
+  "fabric_race.help.lobby": "/race lobby - Вернуться в лобби",
+  "fabric_race.help.setup": "/race setup <seed> - Установить сид",
+  "fabric_race.help.status": "/race status - Показать статус",
+  "fabric_race.help.spectate": "/race spectate <player> - Наблюдать за игроком",
+  "fabric_race.help.teleport": "/race teleport <player> - Телепортироваться к игроку",
+  "fabric_race.help.leaderboard": "/race leaderboard - Показать таблицу лидеров",
+  
+  "fabric_race.milestone.enter_nether": "Вход в Нижний мир",
+  "fabric_race.milestone.find_bastion": "Найден Бастион",
+  "fabric_race.milestone.find_fortress": "Найдена Крепость",
+  "fabric_race.milestone.enter_end": "Вход в Энд",
+  "fabric_race.milestone.kill_dragon": "Дракон убит"
+}

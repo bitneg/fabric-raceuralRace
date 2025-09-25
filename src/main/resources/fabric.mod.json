@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "fabric_race",
+  "version": "${version}",
+  "name": "Fabric Race",
+  "description": "Локальные спидран-гонки на одном сиде с HUD и телеметрией",
+  "authors": ["YourName"],
+  "license": "MIT",
+  "icon": "icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "race.FabricRaceMod",
+      "race.server.RaceServerInit"
+    ],
+    "client": [
+      "race.client.FabricRaceClient"
+    ]
+  },
+  "mixins": [
+    "mixin.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.1",
+    "java": ">=21"
+  },
+  "suggests": {
+    "fabric-api": "*"
+  },
+  "contact": {
+    "sources": "https://example.com/repo"
+  }
+}

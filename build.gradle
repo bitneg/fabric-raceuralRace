@@ -1,0 +1,95 @@
+plugins {
+    id 'java'
+    id 'fabric-loom' version '1.11.1' // Loom 1.11.x для MC 1.21.1 [3]
+}
+
+group = 'com.example.race'            // корректный синтаксис присваивания [4]
+version = '0.1.0'                     // Gradle 8.x рекомендует '=' [4]
+
+// Версионирование для релизов
+def buildNumber = System.getenv('BUILD_NUMBER') ?: 'dev'
+def gitHash = 'git rev-parse --short HEAD'.execute().text.trim()
+def buildTime = new Date().format('yyyyMMdd-HHmmss')
+
+// Формат версии: major.minor.patch-buildNumber-gitHash
+def fullVersion = "${version}-${buildNumber}-${gitHash}"
+
+base {
+    archivesName.set("fabric-race-${fullVersion}")   // современный Provider API вместо bare property [4]
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://maven.fabricmc.net/' } // официальный Fabric Maven [2]
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.1"                       // версия игры [2]
+    mappings "net.fabricmc:yarn:1.21.1+build.3:v2"                // Yarn v2 для 1.21.1 [3]
+    modImplementation "net.fabricmc:fabric-loader:0.16.7"         // Loader 0.16.x [3]
+    // Jar-in-Jar: включаем только необходимые модули Fabric API внутрь нашего jar
+    def fabricApiVersion = "0.116.4+1.21.1"
+    // Проще и надёжнее: зашиваем весь Fabric API как Jar-in-Jar
+    modImplementation(include("net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"))
+}
+
+loom {
+ // раздельные src/main и src/client, как рекомендует Loom [3]
+    mixin {
+        defaultRefmapName = "race.refmap.json"
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21) // JDK 21 по требованиям 1.21 [2]
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21 // таргет JVM 21 [2]
+}
+
+processResources {
+    filesMatching('fabric.mod.json') {
+        expand(version: fullVersion) // корректная форма map аргумента [2]
+    }
+}
+
+// Уменьшаем размер артефакта: убираем лишние файлы из JAR
+tasks.named('jar') {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude("**/LICENSE*", "**/NOTICE*", "**/*.md", "**/*.txt")
+}
+
+// Задача для создания релизного билда
+task releaseBuild {
+    group = 'build'
+    description = 'Создаёт релизный билд с полной версией'
+    dependsOn 'build'
+    
+    doLast {
+        println "=== Релизный билд ==="
+        println "Версия: ${fullVersion}"
+        println "Время сборки: ${buildTime}"
+        println "Git хеш: ${gitHash}"
+        println "Номер сборки: ${buildNumber}"
+    }
+}
+
+// Задача для показа информации о версии
+task versionInfo {
+    group = 'help'
+    description = 'Показывает информацию о версии'
+    
+    doLast {
+        println "=== Информация о версии ==="
+        println "Базовая версия: ${version}"
+        println "Полная версия: ${fullVersion}"
+        println "Номер сборки: ${buildNumber}"
+        println "Git хеш: ${gitHash}"
+        println "Время сборки: ${buildTime}"
+        println "Имя архива: fabric-race-${fullVersion}.jar"
+    }
+}

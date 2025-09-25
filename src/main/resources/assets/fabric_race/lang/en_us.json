@@ -1,0 +1,51 @@
+{
+  "fabric_race.title": "Speedrun Race",
+  "fabric_race.seed": "Seed",
+  "fabric_race.time": "Time",
+  "fabric_race.stage": "Stage",
+  "fabric_race.world": "World",
+  "fabric_race.progress": "Stage Progress",
+  "fabric_race.other_players": "Other Players",
+  
+  "fabric_race.stage.overworld": "Overworld",
+  "fabric_race.stage.nether": "Nether",
+  "fabric_race.stage.bastion": "Bastion",
+  "fabric_race.stage.fortress": "Fortress",
+  "fabric_race.stage.end": "End",
+  "fabric_race.stage.complete": "Complete",
+  
+  "fabric_race.world.overworld": "Overworld",
+  "fabric_race.world.nether": "Nether",
+  "fabric_race.world.end": "End",
+  
+  "fabric_race.command.start": "Race started on seed: %s",
+  "fabric_race.command.stop": "Race stopped",
+  "fabric_race.command.lobby": "All players returned to lobby",
+  "fabric_race.command.setup": "Seed set: %s",
+  "fabric_race.command.status": "=== Race Status ===",
+  "fabric_race.command.spectate": "Spectating player: %s",
+  "fabric_race.command.teleport": "Teleported to player: %s",
+  "fabric_race.command.leaderboard": "=== Leaderboard ===",
+  "fabric_race.command.help": "=== Race Commands ===",
+  
+  "fabric_race.error.race_active": "Race is already active!",
+  "fabric_race.error.race_inactive": "Race is not active!",
+  "fabric_race.error.no_seed": "Set seed first with /race setup <seed>",
+  "fabric_race.error.player_not_found": "Player not found: %s",
+  "fabric_race.error.players_only": "Only players can execute this command",
+  
+  "fabric_race.help.start": "/race start - Start race",
+  "fabric_race.help.stop": "/race stop - Stop race",
+  "fabric_race.help.lobby": "/race lobby - Return to lobby",
+  "fabric_race.help.setup": "/race setup <seed> - Set seed",
+  "fabric_race.help.status": "/race status - Show status",
+  "fabric_race.help.spectate": "/race spectate <player> - Spectate player",
+  "fabric_race.help.teleport": "/race teleport <player> - Teleport to player",
+  "fabric_race.help.leaderboard": "/race leaderboard - Show leaderboard",
+  
+  "fabric_race.milestone.enter_nether": "Enter Nether",
+  "fabric_race.milestone.find_bastion": "Find Bastion",
+  "fabric_race.milestone.find_fortress": "Find Fortress",
+  "fabric_race.milestone.enter_end": "Enter End",
+  "fabric_race.milestone.kill_dragon": "Kill Dragon"
+}
