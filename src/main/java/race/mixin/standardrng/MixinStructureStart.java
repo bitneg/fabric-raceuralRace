@@ -25,8 +25,6 @@ public class MixinStructureStart {
             
             // Синхронизируем генерацию структуры на основе сида гонки
             StructureStart start = (StructureStart) (Object) this;
-            // Логируем генерацию структуры для отладки
-            System.out.println("Structure generated with race seed: " + raceSeed + " at " + pos);
         }
     }
 }

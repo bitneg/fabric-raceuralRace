@@ -26,10 +26,17 @@ public final class SelectSeedScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(Text.literal("Use seed"), b -> send())
                 .dimensions(x, y + 30, w, h).build());
         addDrawableChild(ButtonWidget.builder(Text.literal("Random"), b ->
-                        input.setText(Long.toString(new java.util.Random().nextLong())))
+                        input.setText(Long.toString(generateVanillaLikeSeed())))
                 .dimensions(x, y + 60, w, h).build());
     }
 
+    private long generateVanillaLikeSeed() {
+        java.util.Random random = new java.util.Random();
+        // Генерируем сид как в ванильном Minecraft - в разумном диапазоне
+        // Обычно используются сиды от -2^31 до 2^31-1 для лучшей совместимости
+        return random.nextLong() & 0x7FFFFFFFFFFFFFFFL; // Убираем знаковый бит для положительных значений
+    }
+    
     private void send() {
         try {
             long seed = Long.parseLong(input.getText().trim());

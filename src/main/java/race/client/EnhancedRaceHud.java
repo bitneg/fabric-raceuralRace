@@ -1,8 +1,12 @@
 package race.client;
 
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.boss.dragon.EnderDragonEntity;
 import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.entity.vehicle.BoatEntity;
@@ -17,6 +21,7 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.BiomeKeys;
+import org.lwjgl.glfw.GLFW;
 import race.net.RaceBoardPayload;
 
 import java.util.ArrayList;
@@ -24,19 +29,36 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+import static race.server.phase.RacePhaseManager.getCurrentWorldName;
+
 /**
- * Улучшенный HUD гонки — актуализирован под 1.21.1
+ * Исправленный и «закалённый» HUD гонки:
+ * - Надёжное переключение видимости по клавише R (toggle) без дребезга.
+ * - TPS-оверлей подчиняется общей видимости HUD.
+ * - Защиты от NPE и «пустых» состояний (нет мира/игрока/скороадов).
+ * - Устойчивая активность: не прыгает на пустые значения.
+ * - Безопасные расчёты высоты с переносами строк.
+ * - Ненавязчивые дефолты: таймеры отображаются как 00:00.000, если источник даёт некорректное значение.
+ *
+ * Важно: класс регистрирует keybinding и обработчик тиков лениво при первом обращении.
+ * Достаточно продолжать вызывать EnhancedRaceHud.render(ctx) в клиентском HUD-ивенте.
  */
 public final class EnhancedRaceHud {
+
+    // ---------- Константы макета ----------
     private static final int HUD_MARGIN = 8;
     private static final int ROW_HEIGHT = 14;
     private static final int PLAYER_INFO_BASE_HEIGHT = 56;
-    private static final int PROGRESS_SECTION_HEIGHT = 84;
+    private static final int PROGRESS_SECTION_MIN_ROWS = 3;
+    private static final int OTHER_PLAYERS_MIN_ROWS = 3;
     private static final int MAX_OTHER_PLAYERS = 5;
+
+    // Полупрозрачные фоны команд
     private static final int[] TEAM_BG_COLORS = {
         0x402196F3, 0x40F44336, 0x40FF9800, 0x40673AB7, 0x4026A69A, 0x40FDD835
     };
 
+    // Этапы прогресса
     private static final String[][] PROGRESS = {
         {"Nether",    "minecraft:story/enter_the_nether"},
         {"Bastion",   "minecraft:nether/find_bastion"},
@@ -45,55 +67,112 @@ public final class EnhancedRaceHud {
         {"Complete",  "minecraft:end/kill_dragon"}
     };
 
-    private static String lastActivity = "";
-    private static long lastActivityTime = 0L;
-    private static final long ACTIVITY_DISPLAY_TIME = 2000L;
+    // ---------- Состояние HUD/ввода ----------
+    private static volatile boolean initialized = false;
+    private static KeyBinding TOGGLE_HUD_KEY;
+    private static KeyBinding TOGGLE_TPS_KEY;
 
+    private static volatile boolean hudVisible = true;
+
+    // ---------- Активность/строки ----------
+    private static String currentActivity = "исследует";
+    private static int lastDrawnActivityHeight = ROW_HEIGHT;
+
+    // ---------- TPS ----------
     private static volatile double currentTps = 20.0;
-    private static volatile boolean tpsDisplayEnabled = false;
+    private static volatile boolean tpsDisplayEnabled = true;
 
     private EnhancedRaceHud() {}
 
-    public static void render(DrawContext ctx, RenderTickCounter tickCounter) {
+    // Ленивая инициализация: регистрируем hotkeys и tick-хук
+    public static void initOnce() {
+        if (initialized) return;
+
+        // Регистрируем хоткеи
+        TOGGLE_HUD_KEY = KeyBindingHelper.registerKeyBinding(
+            new KeyBinding("key.race.toggle_hud", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_U, "key.categories.race")
+        );
+        TOGGLE_TPS_KEY = KeyBindingHelper.registerKeyBinding(
+            new KeyBinding("key.race.toggle_tps", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, "key.categories.race")
+        );
+
+        // Тик-обработчик: обрабатываем нажатия без дребезга
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            if (TOGGLE_HUD_KEY != null) {
+                while (TOGGLE_HUD_KEY.wasPressed()) {
+                    hudVisible = !hudVisible;
+                }
+            }
+            if (TOGGLE_TPS_KEY != null) {
+                while (TOGGLE_TPS_KEY.wasPressed()) {
+                    tpsDisplayEnabled = !tpsDisplayEnabled;
+                }
+            }
+        });
+
+        initialized = true;
+    }
+
+    // Вызывается из клиентского HUD-ивента
+    public static void render(DrawContext ctx) {
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null || mc.player == null || mc.textRenderer == null) return; // безопасный выход
+        if (mc == null || mc.getWindow() == null || mc.textRenderer == null) return;
+        if (!hudVisible) {
+            // Даже TPS уважаем общую видимость
+            return;
+        }
+        if (mc.player == null || mc.world == null) {
+            // Мир ещё не готов — можно показать только TPS-оверлей если включён
+            drawTpsInfo(ctx, ctx.getScaledWindowWidth(), ctx.getScaledWindowHeight());
+            return;
+        }
 
         int screenW = ctx.getScaledWindowWidth();
         int screenH = ctx.getScaledWindowHeight();
 
         int dynWidth = clamp((int) (screenW * 0.22), 180, 360);
-        int dynMaxH = clamp((int) (screenH * 0.60), 140, screenH - HUD_MARGIN * 2);
+        int dynMaxH = clamp((int) (screenH * 0.60), 160, screenH - HUD_MARGIN * 2);
         int x = Math.max(HUD_MARGIN, screenW - dynWidth - HUD_MARGIN - 40);
         int y = HUD_MARGIN;
 
-        RaceProgressTracker.updateProgress(); // обновить данные перед расчётом компоновки
-
-        int contentH = calculateHudHeight(dynWidth);
-        int hudH = Math.min(dynMaxH, contentH);
-
+        // TPS-оверлей
         drawTpsInfo(ctx, screenW, screenH);
 
+        // Обновление прогресса делаем безопасно
+        safeUpdateProgress();
+
+        // Пересчёт высоты «Действие»
+        lastDrawnActivityHeight = drawWrappedHeight("Действие: " + getStableActivity(mc), dynWidth - 10);
+
+        // Подсчёт итоговой высоты
+        int contentH = calculateHudHeight(dynWidth);
+        int hudH = Math.min(dynMaxH, contentH);
         if (hudH <= 0) return;
+
         drawBackground(ctx, x, y, dynWidth, hudH);
 
-        // Заголовок
         drawHeader(ctx, x, y, dynWidth);
         y += 18;
 
-        // Блок игрока
         y += drawPlayerInfo(ctx, x, y, dynWidth);
+
         int remaining = HUD_MARGIN + hudH - y;
-        if (remaining <= 0) return;
+        if (remaining > 0) {
+            // Прогресс: до 45% остатка, но не меньше минимума
+            int minProgress = PROGRESS_SECTION_MIN_ROWS * ROW_HEIGHT + 16;
+            int budgetProgress = Math.max(minProgress, (int) (remaining * 0.45));
+            y += drawProgressStagesLimited(ctx, x, y, dynWidth, budgetProgress);
+        }
 
-        // Прогресс этапов (ограниченный по высоте)
-        int budgetProgress = Math.max(0, (int) (remaining * 0.45));
-        y += drawProgressStagesLimited(ctx, x, y, dynWidth, budgetProgress);
         remaining = HUD_MARGIN + hudH - y;
-        if (remaining <= 0) return;
-
-        // Другие игроки (в остаток)
-        y += drawOtherPlayersLimited(ctx, x, y, dynWidth, remaining);
+        if (remaining > 0) {
+            int minOthers = OTHER_PLAYERS_MIN_ROWS * ROW_HEIGHT + 16;
+            int budgetOthers = Math.max(minOthers, remaining);
+            y += drawOtherPlayersLimited(ctx, x, y, dynWidth, budgetOthers);
+        }
     }
+
+    // ---------- Рендер-помощники ----------
 
     private static void drawBackground(DrawContext ctx, int x, int y, int w, int h) {
         ctx.fill(x - 4, y - 4, x + w, y + h, 0x88000000);
@@ -103,67 +182,68 @@ public final class EnhancedRaceHud {
 
     private static void drawHeader(DrawContext ctx, int x, int y, int width) {
         MinecraftClient mc = MinecraftClient.getInstance();
-        String title = "Спидран Гонка";
-        ctx.drawText(mc.textRenderer, Text.literal(title).formatted(Formatting.GOLD, Formatting.BOLD), x, y, 0xFFFFFF, false);
+        if (mc == null || mc.textRenderer == null) return;
 
-        String seedStr = RaceClientEvents.getWorldSeed() >= 0 ? Long.toString(RaceClientEvents.getWorldSeed()) : "—";
-        String timeStr = TimeFmt.msToClock(RaceClientEvents.getRtaMs());
+        ctx.drawText(mc.textRenderer, Text.literal("Спидран Гонка").formatted(Formatting.GOLD, Formatting.BOLD), x, y, 0xFFFFFF, false);
+
+        long seed = safeSeed();
+        String seedStr = seed >= 0 ? Long.toString(seed) : "—";
+        String timeStr = TimeFmt.msToClock(safeRtaMs());
         ctx.drawText(mc.textRenderer, Text.literal("Seed: " + seedStr + " | RTA: " + timeStr).formatted(Formatting.GRAY), x, y + 12, 0xFFFFFF, false);
     }
 
     private static int drawPlayerInfo(DrawContext ctx, int x, int y, int width) {
         MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return 0;
 
-        String currentStage = RaceProgressTracker.getCurrentStage();
-        long currentTime = RaceClientEvents.getRtaMs();
-        String worldName = getCurrentWorldName();
+        String currentStage = safeCurrentStage();
+        long currentTime = safeRtaMs();
+        String worldName = getCurrentWorldName(mc);
 
         ctx.drawText(mc.textRenderer, Text.literal("Этап: " + currentStage).formatted(Formatting.YELLOW), x, y, 0xFFFFFF, false);
         ctx.drawText(mc.textRenderer, Text.literal("Время: " + TimeFmt.msToClock(currentTime)).formatted(Formatting.WHITE), x, y + 14, 0xFFFFFF, false);
         ctx.drawText(mc.textRenderer, Text.literal("Мир: " + worldName).formatted(Formatting.AQUA), x, y + 28, 0xFFFFFF, false);
 
-        String activity = getCachedActivity(mc);
+        String activity = getStableActivity(mc);
         int used = PLAYER_INFO_BASE_HEIGHT;
-        if (!activity.isEmpty()) {
-            used += drawWrapped(ctx, "Действие: " + activity, x, y + 42, width - 10, Formatting.LIGHT_PURPLE);
-        }
+        used += drawWrapped(ctx, "Действие: " + activity, x, y + 42, width - 10, Formatting.LIGHT_PURPLE);
         return used;
     }
 
     private static int drawProgressStagesLimited(DrawContext ctx, int x, int y, int width, int maxHeight) {
         int used = 0;
-        if (maxHeight <= 0) return 0;
-
         MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return 0;
+
         ctx.drawText(mc.textRenderer, Text.literal("Прогресс этапов:").formatted(Formatting.BOLD), x, y, 0xFFFFFF, false);
         used += 16;
-        if (used >= maxHeight) return used;
 
-        // Определяем «текущий» — первый незавершенный
+        // Текущий этап = первый незавершённый
         int currentIdx = PROGRESS.length - 1;
         for (int i = 0; i < PROGRESS.length; i++) {
-            if (!RaceProgressTracker.isStageCompleted(PROGRESS[i][1])) { 
-                currentIdx = i; 
-                break; 
+            if (!safeStageCompleted(PROGRESS[i][1])) {
+                currentIdx = i;
+                break;
             }
         }
 
-        long rta = RaceClientEvents.getRtaMs();
+        long rta = safeRtaMs();
 
         for (int i = 0; i < PROGRESS.length; i++) {
             if (used + ROW_HEIGHT > maxHeight) break;
+
             String name = PROGRESS[i][0];
             String id   = PROGRESS[i][1];
-            boolean done = RaceProgressTracker.isStageCompleted(id);
+            boolean done = safeStageCompleted(id);
             String symbol;
             String timeStr;
 
             if (done) {
                 symbol = "✓";
-                timeStr = TimeFmt.msToClock(RaceProgressTracker.getStageTime(id));
+                timeStr = TimeFmt.msToClock(safeStageTime(id));
             } else if (i == currentIdx) {
                 symbol = "▶";
-                timeStr = TimeFmt.msToClock(rta); // живой таймер для активного этапа
+                timeStr = TimeFmt.msToClock(rta);
             } else {
                 symbol = "○";
                 timeStr = "—";
@@ -174,21 +254,29 @@ public final class EnhancedRaceHud {
             ctx.drawText(mc.textRenderer, Text.literal(line).formatted(color), x, y + used, 0xFFFFFF, false);
             used += ROW_HEIGHT;
         }
+
+        // Диагностика — одна строка при наличии места
+        String debugInfo = "Seed=" + safeSeed() + " Active=" + safeRaceActive() + " rtaMs=" + safeRtaMs();
+        if (used + ROW_HEIGHT <= maxHeight) {
+            ctx.drawText(mc.textRenderer, Text.literal(debugInfo).formatted(Formatting.GRAY), x, y + used, 0xFFFFFF, false);
+            used += ROW_HEIGHT;
+        }
         return used;
     }
 
     private static int drawOtherPlayersLimited(DrawContext ctx, int x, int y, int width, int maxHeight) {
         int used = 0;
-        if (maxHeight <= 0) return 0;
-
         MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return 0;
+
         ctx.drawText(mc.textRenderer, Text.literal("Другие игроки:").formatted(Formatting.BOLD), x, y, 0xFFFFFF, false);
         used += 16;
-        if (used >= maxHeight) return used;
 
         List<RaceBoardPayload.Row> rows = HudBoardState.getRows();
+        if (rows == null) rows = List.of();
+
         String me = mc.getSession() != null ? mc.getSession().getUsername() : "";
-        String myWorld = (mc.world != null) ? mc.world.getRegistryKey().getValue().toString() : "";
+        String myWorld = (mc.world != null) ? mc.world.getRegistryKey().getValue().toString() : null;
 
         List<RaceBoardPayload.Row> others = new ArrayList<>(rows.size());
         for (RaceBoardPayload.Row r : rows) {
@@ -197,23 +285,23 @@ public final class EnhancedRaceHud {
         }
         others.sort(Comparator.comparingLong(RaceBoardPayload.Row::rtaMs));
 
-        java.util.Map<String, Integer> teamIndex = new java.util.HashMap<>();
+        Map<String, Integer> teamIndex = new java.util.HashMap<>();
         int teamCounter = 1;
         for (RaceBoardPayload.Row r : others) {
             if (r.worldKey() == null) continue;
-            if (r.worldKey().equals(myWorld)) continue;
+            if (myWorld != null && r.worldKey().equals(myWorld)) continue;
             if (!teamIndex.containsKey(r.worldKey())) teamIndex.put(r.worldKey(), teamCounter++);
         }
 
         int drawnCount = 0;
         for (int i = 0; i < others.size() && drawnCount < MAX_OTHER_PLAYERS; i++) {
             RaceBoardPayload.Row r = others.get(i);
-            boolean ally = r.worldKey() != null && r.worldKey().equals(myWorld);
+            boolean ally = (myWorld != null && r.worldKey() != null && r.worldKey().equals(myWorld));
             int tIdx = (!ally && r.worldKey() != null) ? teamIndex.getOrDefault(r.worldKey(), 0) : 0;
 
             String activity = (r.activity() == null || r.activity().isEmpty()) ? "" : (" — " + r.activity());
             String prefix = ally ? "[ALLY] " : (tIdx > 0 ? ("[T" + tIdx + "] ") : "[ENEMY] ");
-            String line = prefix + r.name() + " [" + r.stage() + "] " + TimeFmt.msToClock(r.rtaMs()) + activity;
+            String line = prefix + r.name() + " [" + r.stage() + "] " + TimeFmt.msToClock(Math.max(0L, r.rtaMs())) + activity;
 
             int hEst = drawWrappedHeight(line, width - 10);
             if (!ally && tIdx > 0) {
@@ -232,6 +320,7 @@ public final class EnhancedRaceHud {
 
     private static int drawWrapped(DrawContext ctx, String str, int x, int y, int width, Formatting color) {
         MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return ROW_HEIGHT;
         List<OrderedText> lines = mc.textRenderer.wrapLines(Text.literal(str).formatted(color), width);
         int used = 0;
         for (OrderedText ot : lines) {
@@ -243,6 +332,7 @@ public final class EnhancedRaceHud {
 
     private static int drawWrappedHeight(String str, int width) {
         MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return ROW_HEIGHT;
         List<OrderedText> lines = mc.textRenderer.wrapLines(Text.literal(str), width);
         return Math.max(ROW_HEIGHT, lines.size() * ROW_HEIGHT);
     }
@@ -251,12 +341,14 @@ public final class EnhancedRaceHud {
         return v < lo ? lo : Math.min(v, hi);
     }
 
-    static String inferActivityPublic(MinecraftClient client) {
-        if (client == null || client.player == null || client.world == null) return ""; // безопасность
+    // ---------- Логика активности ----------
+
+    // Внешний inference как был, с защитами
+    public static String inferActivityPublic(MinecraftClient client) {
+        if (client == null || client.player == null || client.world == null) return "";
 
         var p = client.player;
 
-        // Открытые экраны
         if (client.currentScreen != null) {
             String sn = client.currentScreen.getClass().getSimpleName().toLowerCase();
             if (sn.contains("craft")) return "крафтит";
@@ -280,27 +372,33 @@ public final class EnhancedRaceHud {
             if (use.isOf(Items.SHIELD)) return "блокирует щитом";
         }
 
-        if (client.options.attackKey.isPressed() && client.crosshairTarget != null) {
-            HitResult hr = client.crosshairTarget;
-            if (hr.getType() == HitResult.Type.BLOCK) {
-                BlockHitResult bhr = (BlockHitResult) hr;
-                var state = client.world.getBlockState(bhr.getBlockPos());
-                return "добывает " + getBlockDisplayName(state.getBlock());
-            } else if (hr.getType() == HitResult.Type.ENTITY) {
-                if (hr instanceof net.minecraft.util.hit.EntityHitResult ehr && ehr.getEntity() != null) {
-                    return "сражается с " + getEntityDisplayName(ehr.getEntity());
+        try {
+            if (MinecraftClient.getInstance().options.attackKey.isPressed() && client.crosshairTarget != null) {
+                HitResult hr = client.crosshairTarget;
+                if (hr.getType() == HitResult.Type.BLOCK) {
+                    BlockHitResult bhr = (BlockHitResult) hr;
+                    var state = client.world.getBlockState(bhr.getBlockPos());
+                    return "добывает " + getBlockDisplayName(state.getBlock());
+                } else if (hr.getType() == HitResult.Type.ENTITY) {
+                    if (hr instanceof net.minecraft.util.hit.EntityHitResult ehr && ehr.getEntity() != null) {
+                        return "сражается с " + getEntityDisplayName(ehr.getEntity());
+                    }
+                    return "сражается";
                 }
-                return "сражается";
             }
-        }
+        } catch (Throwable ignored) {}
 
         ItemStack main = p.getMainHandStack();
-        if (main.isOf(Items.FLINT_AND_STEEL)) return "поджигает";
-        if (main.getItem() instanceof BlockItem && client.options.useKey.isPressed()) {
-            return "ставит " + getBlockDisplayName(((BlockItem) main.getItem()).getBlock());
-        }
-        if (client.options.useKey.isPressed() && main.isOf(Items.WATER_BUCKET)) return "разливает воду";
-        if (client.options.useKey.isPressed() && main.isOf(Items.LAVA_BUCKET)) return "разливает лаву";
+        try {
+            if (main.isOf(Items.FLINT_AND_STEEL)) return "поджигает";
+            if (MinecraftClient.getInstance().options.useKey.isPressed()) {
+                if (main.getItem() instanceof BlockItem) {
+                    return "ставит " + getBlockDisplayName(((BlockItem) main.getItem()).getBlock());
+                }
+                if (main.isOf(Items.WATER_BUCKET)) return "разливает воду";
+                if (main.isOf(Items.LAVA_BUCKET)) return "разливает лаву";
+            }
+        } catch (Throwable ignored) {}
 
         if (p.isSleeping()) return "спит";
         if (p.isSwimming() || p.isSubmergedInWater()) return "плывёт";
@@ -313,14 +411,13 @@ public final class EnhancedRaceHud {
             try {
                 if (v instanceof BoatEntity) return "едет на лодке";
                 if (v instanceof AbstractMinecartEntity) return "едет в вагонетке";
-                String id = v.getType().toString();
+                String id = v.getType().toString().toLowerCase();
                 if (id.contains("strider")) return "едет на страйдере";
                 if (id.contains("horse")) return "едет на лошади";
             } catch (Throwable ignored) {}
             return "на средстве передвижения";
         }
 
-        // Измерения
         if (client.world.getRegistryKey() == World.END) {
             boolean dragonSeen = !client.world.getEntitiesByClass(
                 EnderDragonEntity.class, p.getBoundingBox().expand(256), e -> true
@@ -331,14 +428,13 @@ public final class EnhancedRaceHud {
             return "в Нижнем мире";
         }
 
-        // Макро-эвристики
         try {
             var biome = client.world.getBiome(p.getBlockPos());
             int y = (int) p.getY();
             boolean miningDepth = y < 40;
             if (client.world.getRegistryKey() == World.NETHER) {
                 if (biome.matchesKey(BiomeKeys.WARPED_FOREST)) return "фармит эндерменов";
-            } else if (miningDepth && (client.options.attackKey.isPressed()
+            } else if (miningDepth && (MinecraftClient.getInstance().options.attackKey.isPressed()
                     || main.isOf(Items.IRON_PICKAXE) || main.isOf(Items.STONE_PICKAXE)
                     || main.isOf(Items.DIAMOND_PICKAXE) || main.isOf(Items.NETHERITE_PICKAXE))) {
                 return "копает шахту";
@@ -348,62 +444,89 @@ public final class EnhancedRaceHud {
         return "исследует";
     }
 
-    private static String getCachedActivity(MinecraftClient client) {
-        long now = System.currentTimeMillis();
-        String current = inferActivityPublic(client);
-        if (!current.isEmpty() && !current.equals("исследует")) {
-            lastActivity = current;
-            lastActivityTime = now;
-            return current;
+    // Стабилизация: обновлять только на непустое значение
+    private static String getStableActivity(MinecraftClient client) {
+        String detected = "";
+        try {
+            detected = inferActivityPublic(client);
+        } catch (Throwable ignored) {}
+        if (detected != null && !detected.isEmpty()) {
+            currentActivity = detected;
         }
-        if (!lastActivity.isEmpty() && (now - lastActivityTime) < ACTIVITY_DISPLAY_TIME) {
-            return lastActivity;
-        }
-        return current;
+        return currentActivity;
     }
 
+    // ---------- Высоты/размеры ----------
+
     private static int calculateHudHeight(int width) {
-        int h = 22;
-        MinecraftClient mc = MinecraftClient.getInstance();
-        String activity = getCachedActivity(mc);
-        int pi = PLAYER_INFO_BASE_HEIGHT;
-        if (!activity.isEmpty()) {
-            pi += drawWrappedHeight("Действие: " + activity, width - 10);
-        }
-        h += pi;
-        h += PROGRESS_SECTION_HEIGHT;
-        h += 20;
-
-        List<RaceBoardPayload.Row> rows = HudBoardState.getRows();
-        String me = mc.getSession() != null ? mc.getSession().getUsername() : "";
-        String myWorld = (mc.world != null) ? mc.world.getRegistryKey().getValue().toString() : "";
-
-        int shown = 0;
-        for (RaceBoardPayload.Row r : rows) {
-            if (r == null || r.name() == null || r.name().isEmpty() || r.name().equals(me)) continue;
-            boolean ally = r.worldKey() != null && r.worldKey().equals(myWorld);
-            String activityLine = (r.activity() == null || r.activity().isEmpty()) ? "" : (" — " + r.activity());
-            String prefix = ally ? "[ALLY] " : "";
-            String line = prefix + r.name() + " [" + r.stage() + "] " + TimeFmt.msToClock(r.rtaMs()) + activityLine;
-            h += drawWrappedHeight(line, width - 10);
-            if (++shown >= MAX_OTHER_PLAYERS) break;
-        }
-        h += 8;
+        int h = 18 + 4; // заголовок
+        int activity = Math.max(ROW_HEIGHT, lastDrawnActivityHeight);
+        h += PLAYER_INFO_BASE_HEIGHT + activity;
+        h += 16 + PROGRESS_SECTION_MIN_ROWS * ROW_HEIGHT;
+        h += 16 + OTHER_PLAYERS_MIN_ROWS * ROW_HEIGHT;
         return h;
     }
 
-    private static String getCurrentWorldName() {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.world == null) return "—";
-        
-        var w = mc.world;
-        boolean inEnd = w.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END);
-        boolean inNether = w.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER);
-        
-        if (inEnd) return "End";
-        if (inNether) return "Nether";
-        return "Overworld";
+    // ---------- Безопасные геттеры внешних систем ----------
+
+    private static void safeUpdateProgress() {
+        try {
+            RaceProgressTracker.updateProgress();
+        } catch (Throwable ignored) {}
     }
+
+    private static String safeCurrentStage() {
+        try {
+            String s = RaceProgressTracker.getCurrentStage();
+            return (s == null || s.isBlank()) ? "—" : s;
+        } catch (Throwable ignored) {
+            return "—";
+        }
+    }
+
+    private static boolean safeStageCompleted(String id) {
+        try {
+            return RaceProgressTracker.isStageCompleted(id);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static long safeStageTime(String id) {
+        try {
+            long v = RaceProgressTracker.getStageTime(id);
+            return Math.max(0L, v);
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private static long safeRtaMs() {
+        try {
+            long v = RaceClientEvents.getRtaMs();
+            return Math.max(0L, v);
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private static boolean safeRaceActive() {
+        try {
+            return RaceClientEvents.isRaceActive();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static long safeSeed() {
+        try {
+            return RaceClientEvents.getWorldSeed();
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
+    // ---------- Имена блоков/сущностей (простая локализация) ----------
 
     private static String getBlockDisplayName(net.minecraft.block.Block block) {
         try {
@@ -484,6 +607,18 @@ public final class EnhancedRaceHud {
         }
     }
 
+    private static String getCurrentWorldName(MinecraftClient mc) {
+        if (mc == null || mc.world == null) return "—";
+        var w = mc.world;
+        boolean inEnd = w.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END);
+        boolean inNether = w.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER);
+        if (inEnd) return "End";
+        if (inNether) return "Nether";
+        return "Overworld";
+    }
+
+    // ---------- TPS ----------
+
     public static void setTpsInfo(double tps, boolean enabled) {
         currentTps = tps;
         tpsDisplayEnabled = enabled;
@@ -491,14 +626,20 @@ public final class EnhancedRaceHud {
 
     private static void drawTpsInfo(DrawContext ctx, int screenW, int screenH) {
         if (!tpsDisplayEnabled) return;
-        var tr = MinecraftClient.getInstance().textRenderer;
+
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.textRenderer == null) return;
+
         String tpsText = String.format("TPS: %.1f", currentTps);
-        int textW = tr.getWidth(tpsText);
+        int textW = mc.textRenderer.getWidth(tpsText);
         int x = screenW - textW - 10;
         int y = 10;
 
-        int color = currentTps >= 19.5 ? 0x00FF00 : currentTps >= 18.0 ? 0xFFFF00 : currentTps >= 15.0 ? 0xFF8000 : 0xFF0000;
+        int color = currentTps >= 19.5 ? 0x00FF00
+                   : currentTps >= 18.0 ? 0xFFFF00
+                   : currentTps >= 15.0 ? 0xFF8000
+                   : 0xFF0000;
         ctx.fill(x - 2, y - 2, x + textW + 2, y + 10, 0x80000000);
-        ctx.drawText(tr, tpsText, x, y, color, false);
+        ctx.drawText(mc.textRenderer, tpsText, x, y, color, false);
     }
 }

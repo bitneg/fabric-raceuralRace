@@ -42,29 +42,7 @@ public final class RaceProgressTracker {
     );
     
     public static void updateProgress() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.getNetworkHandler() == null) return;
-        
-        ClientAdvancementManager manager = client.getNetworkHandler().getAdvancementHandler();
-        long currentTime = RaceClientEvents.getRtaMs();
-        
-        for (String advancementId : SPEEDRUN_ADVANCEMENTS) {
-            AdvancementEntry advancement = manager.get(Identifier.tryParse(advancementId));
-            if (advancement != null) {
-                // Получаем прогресс из внутренней карты через рефлексию
-                AdvancementProgress progress = getAdvancementProgress(manager, advancement);
-                if (progress != null) {
-                    boolean isCompleted = progress.isDone();
-                    
-                    // Если достижение только что завершено, записываем время
-                    if (isCompleted && !milestones.getOrDefault(advancementId, false)) {
-                        milestoneTimes.put(advancementId, currentTime);
-                        milestones.put(advancementId, true);
-                        System.out.println("[Race] Milestone completed: " + advancementId + " at " + currentTime + "ms");
-                    }
-                }
-            }
-        }
+        // no-op under custom worlds - этапы теперь приходят от сервера через MilestoneS2C
     }
     
     public static String getCurrentStage() {
@@ -79,17 +57,27 @@ public final class RaceProgressTracker {
     }
     
     public static long getStageTime(String stageId) {
-        return milestoneTimes.getOrDefault(stageId, -1L);
+        return milestoneTimes.getOrDefault(stageId, 0L);
     }
     
     public static boolean isStageCompleted(String stageId) {
-        // Используем кэшированные данные из milestones
-        return milestones.getOrDefault(stageId, false);
+        return Boolean.TRUE.equals(milestones.get(stageId));
     }
     
     public static void reset() {
         milestoneTimes.clear();
         milestones.clear();
+    }
+    
+    /**
+     * Применяет веху от сервера (без зависимости от Advancements)
+     */
+    public static synchronized void applyMilestone(String milestoneId, long rtaMs) {
+        if (!Boolean.TRUE.equals(milestones.get(milestoneId))) {
+            milestones.put(milestoneId, true);
+            milestoneTimes.put(milestoneId, Math.max(0L, rtaMs));
+            System.out.println("[Race] Milestone applied from server: " + milestoneId + " at " + rtaMs + "ms");
+        }
     }
     
     public static Map<String, Long> getAllMilestoneTimes() {

@@ -114,7 +114,7 @@ public final class DeathEchoManager {
         for (DeathEchoState.Echo e : st.getEchoes(seed, dim)) {
             String key = world.getRegistryKey().getValue() + "|" + e.pos.getX()+","+e.pos.getY()+","+e.pos.getZ() + "|" + e.title + "|" + e.playerName;
             long last = LAST_SHOW.getOrDefault(key, 0L);
-            if (now - last >= 3000L) { // не чаще раза в 3 сек
+            if (now - last >= 7000L) { // не чаще раза в 7 сек
                 spawnGhost(world, e.pos, e.title, e.playerName);
                 LAST_SHOW.put(key, now);
             }
@@ -155,12 +155,19 @@ public final class DeathEchoManager {
         int particleCount = race.server.RaceServerInit.getGhostParticleCount(180);
         if (particleCount <= 0) return; // Отключено при низкой производительности
         
+        // Уменьшаем количество частиц для локального акцента (12-24 вместо 180)
+        int reducedCount = Math.min(24, Math.max(12, particleCount / 8));
+        
         // Лёгкий эффект «пятна крови» без сущностей: заметная вспышка частиц
         DustParticleEffect red = new DustParticleEffect(new Vector3f(0.85f, 0.05f, 0.05f), 1.6f);
         double x = pos.getX() + 0.5;
         double y = pos.getY() + 0.15; // чуть выше, чтобы не утонуло в блоке
         double z = pos.getZ() + 0.5;
-        world.spawnParticles(red, x, y, z, particleCount, 0.6, 0.05, 0.6, 0.015);
+        world.spawnParticles(red, x, y, z, reducedCount, 0.6, 0.05, 0.6, 0.015);
+        
+        // Отправляем дальнобойный маркер всем видящим игрокам
+
+        
         // Рядом создаём простое «надгробие»: камень + стоящая табличка с именем
         try {
             String echoKey = world.getRegistryKey().getValue() + "|" + pos.getX()+","+pos.getY()+","+pos.getZ() + "|" + playerName;

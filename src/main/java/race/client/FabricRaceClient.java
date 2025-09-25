@@ -14,15 +14,23 @@ import net.minecraft.client.util.InputUtil;
 import net.minecraft.text.Text;
 import race.client.hub.RaceHubState;
 import race.net.*;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import race.client.ui.RaceMenuScreen;
 import org.lwjgl.glfw.GLFW;
+
+import java.util.List;
+import java.util.Map;
 
 public final class FabricRaceClient implements ClientModInitializer {
     private static volatile boolean hudEnabled = true;
     private static KeyBinding openMenuKey;
     private static KeyBinding toggleHudKey;
     private static KeyBinding openAchievementsKey;
+
+    // троттлинг клиентских прогресс-апдейтов
+    private static long lastProgressSentMs = 0L;
+    private static String lastSentStage = "";
+    private static String lastSentActivity = "";
+    private static String lastSentWorldKey = "";
 
     @Override
     public void onInitializeClient() {
@@ -49,21 +57,27 @@ public final class FabricRaceClient implements ClientModInitializer {
                 })
         ); // [1]
 
-        // Периодическая отправка своей активности и прогресса (через ProgressSyncManager)
-        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
+        // Приём TPS и обновление HUD
+        ClientPlayNetworking.registerGlobalReceiver(TpsPayload.ID, (payload, ctx) ->
+                ctx.client().execute(() -> {
+                    EnhancedRaceHud.setTpsInfo(payload.tps(), payload.enabled());
+                })
+        ); // важно для обновления TPS
+
+        // Периодическая отправка своей активности и прогресса — с троттлингом и диффом
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null || client.world == null || client.getNetworkHandler() == null) return;
+
+            String stage = RaceProgressTracker.getCurrentStage();
             String activity = EnhancedRaceHud.inferActivityPublic(client);
-            var payload = new PlayerProgressPayload(
-                    client.getSession().getUsername(),
-                    RaceClientEvents.getRtaMs(),
-                    RaceProgressTracker.getCurrentStage(),
-                    java.util.Map.of(),
-                    client.world.getRegistryKey().getValue().toString(),
-                    activity
-            );
-            try {
-                ClientPlayNetworking.send(payload);
-            } catch (Throwable ignored) {}
+            String worldKey = client.world.getRegistryKey().getValue().toString();
+
+            long now = System.currentTimeMillis();
+            boolean changed = (!stage.equals(lastSentStage)) ||
+                              (!activity.equals(lastSentActivity)) ||
+                              (!worldKey.equals(lastSentWorldKey));
+
+            // PlayerProgressPayload удален - больше не отправляем
         });
 
         // Список сидов/миров для меню
@@ -76,14 +90,7 @@ public final class FabricRaceClient implements ClientModInitializer {
         );
 
         HudRenderCallback.EVENT.register(FabricRaceClient::onHudRender); // [3]
-        // Приём призрачных шлейфов
-        ClientPlayNetworking.registerGlobalReceiver(GhostTrailPayload.ID, (payload, ctx) ->
-                ctx.client().execute(() -> GhostOverlay.addTrail(payload.playerName(), payload.cause(), payload.points()))
-        );
-        // Приём лайв‑точек параллельных игроков
-        ClientPlayNetworking.registerGlobalReceiver(ParallelPlayersPayload.ID, (payload, ctx) ->
-                ctx.client().execute(() -> GhostOverlay.addLive("__live__", payload.points()))
-        );
+        // Приёмники для DeathEchoRenderer перенесены в RaceClientInit
         
         // Приём статуса join-запроса
         ClientPlayNetworking.registerGlobalReceiver(JoinRequestStatusPayload.ID, (payload, ctx) ->
@@ -134,7 +141,7 @@ public final class FabricRaceClient implements ClientModInitializer {
         if (!hudEnabled) return;
         
         // Используем новый улучшенный HUD
-        EnhancedRaceHud.render(ctx, tickCounter);
+        EnhancedRaceHud.render(ctx);
         GhostOverlay.render(ctx, tickCounter);
     }
     

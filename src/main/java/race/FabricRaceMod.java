@@ -6,12 +6,12 @@ import race.net.StartRacePayload;
 import race.net.RaceBoardPayload;
 import race.net.SeedHandshakeC2SPayload;
 import race.net.SeedAckS2CPayload;
-import race.net.PlayerProgressPayload;
 import race.net.GhostTrailPayload;
 import race.net.ParallelPlayersPayload;
 import race.net.SeedLobbyListPayload;
 import race.net.JoinRequestStatusPayload;
 import race.net.RaceTimeSyncS2CPayload;
+
 import race.server.world.ServerRaceConfig;
 import race.config.RaceConfig;
 import race.hub.HubManager;
@@ -39,12 +39,11 @@ public final class FabricRaceMod implements ModInitializer {
         PayloadTypeRegistry.playC2S().register(SeedHandshakeC2SPayload.ID, SeedHandshakeC2SPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(SeedAckS2CPayload.ID, SeedAckS2CPayload.CODEC);
         // Клиент -> Сервер: активность и прогресс игрока
-        PayloadTypeRegistry.playC2S().register(PlayerProgressPayload.ID, PlayerProgressPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(GhostTrailPayload.ID, GhostTrailPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(ParallelPlayersPayload.ID, ParallelPlayersPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(JoinRequestStatusPayload.ID, JoinRequestStatusPayload.CODEC);
         PayloadTypeRegistry.playS2C().register(RaceTimeSyncS2CPayload.ID, RaceTimeSyncS2CPayload.CODEC);
-        
+
         // Инициализируем хаб при подключении игроков
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             if (!HubManager.isHubActive()) {

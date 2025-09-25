@@ -4,7 +4,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
-import race.net.PlayerProgressPayload;
 import race.server.phase.PhaseState;
 
 import java.util.HashMap;
@@ -153,18 +152,7 @@ public class ProgressSyncManager {
      * Отправляет обновление прогресса игроку
      */
     private static void sendProgressUpdate(ServerPlayerEntity player, PlayerProgressData progressData) {
-        // Создаем payload с данными прогресса
-        PlayerProgressPayload payload = new PlayerProgressPayload(
-            progressData.getPlayerName(),
-            progressData.getRaceTime(),
-            progressData.getCurrentStage(),
-            progressData.getAdvancementTimes(),
-			player.getWorld().getRegistryKey().getValue().toString(),
-			progressData.getActivity()
-        );
-        
-        // Отправляем через сеть (это будет реализовано в сетевом слое)
-        // player.networkHandler.sendPacket(payload);
+        // PlayerProgressPayload удален - больше не отправляем
     }
     
     /**

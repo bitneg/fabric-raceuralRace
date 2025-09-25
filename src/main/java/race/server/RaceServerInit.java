@@ -19,7 +19,6 @@ import race.net.RaceBoardPayload;
 import race.net.SeedAckS2CPayload;
 import race.net.SeedHandshakeC2SPayload;
 import race.net.StartRacePayload;
-import race.net.PlayerProgressPayload;
 import race.net.SeedLobbyListPayload;
 import race.net.SeedLobbyEntry;
 import race.server.phase.NoCollisionUtil;
@@ -93,6 +92,9 @@ public final class RaceServerInit implements ModInitializer {
     private static final java.util.Map<java.util.UUID, Long> lastPlayerUpdate = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<java.util.UUID, Long> lastMobCheck = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<java.util.UUID, Long> lastParallelUpdate = new java.util.concurrent.ConcurrentHashMap<>();
+    
+    // Состояние для отслеживания структур
+    private static final java.util.Set<java.util.UUID> BASTION_SEEN = new java.util.HashSet<>();
     private static final java.util.concurrent.atomic.AtomicInteger performanceLevel = new java.util.concurrent.atomic.AtomicInteger(0); // 0=normal, 1=medium, 2=high load
     
     // Система автоматической оптимизации
@@ -660,6 +662,10 @@ public final class RaceServerInit implements ModInitializer {
         net.minecraft.util.math.BlockPos base = findSafeGround(p);
         freezePos.put(id, base);
         p.changeGameMode(net.minecraft.world.GameMode.ADVENTURE);
+        
+        // Используем новую оптимизированную систему freeze
+        race.control.Freeze.lock(p);
+        
         try {
             p.setVelocity(0, 0, 0);
             p.requestTeleport(base.getX() + 0.5, base.getY(), base.getZ() + 0.5);
@@ -735,9 +741,19 @@ public final class RaceServerInit implements ModInitializer {
         return -1;
     }
 
-    // API: личный старт — разморозка и отправка сигнала клиенту о старте таймера
-    public static void personalStart(ServerPlayerEntity p, long seed) {
-        java.util.UUID id = p.getUuid();
+        // API: личный старт — разморозка и отправка сигнала клиенту о старте таймера
+        public static void personalStart(ServerPlayerEntity p, long seed) {
+            long startTime = race.monitor.PerformanceMonitor.startOperation("personalStart");
+            java.util.UUID id = p.getUuid();
+
+            // ВАЛИДАЦИЯ: запрещаем старт с сидом <= 0
+            if (seed <= 0) {
+                p.sendMessage(net.minecraft.text.Text.literal("Сначала выберите сид: /race seed <число> или /race setup <seed>")
+                    .formatted(net.minecraft.util.Formatting.RED), false);
+                LOGGER.warn("[Race] Player {} tried to start with invalid seed: {}", p.getName().getString(), seed);
+                race.monitor.PerformanceMonitor.endOperation("personalStart", startTime);
+                return; // не шлём StartRacePayload
+            }
         
         // КЛЮЧЕВАЯ ПРОВЕРКА: не стартуем повторно
         if (personalStarted.contains(id)) {
@@ -800,9 +816,16 @@ public final class RaceServerInit implements ModInitializer {
         try { p.changeGameMode(net.minecraft.world.GameMode.SURVIVAL); } catch (Throwable ignored) {}
         try { ServerPlayNetworking.send(p, new StartRacePayload(seed, System.currentTimeMillis())); } catch (Throwable ignored) {}
         
+        // Кешируем данные игрока для оптимизации
+        String worldName = p.getServerWorld().getRegistryKey().getValue().toString();
+        race.cache.PerformanceCache.setPlayerCache(id, worldName, seed, "стартует гонку");
+        
         // ДИАГНОСТИКА: Логируем размораживание для отладки
         LOGGER.info("[Race] UNFREEZE: Player {} started personal race with seed {}", 
             p.getName().getString(), seed);
+        
+        // Завершаем мониторинг операции
+        race.monitor.PerformanceMonitor.endOperation("personalStart", startTime);
     }
 
     public static void startRace(long s, long t0) {
@@ -818,25 +841,29 @@ public final class RaceServerInit implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        // Регистрируем команды производительности
+        net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            race.commands.PerformanceCommands.register(dispatcher);
+        });
         // Инициализируем ReturnPointRegistry с персистентным хранением
         net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(server -> {
             race.server.world.ReturnPointRegistry.initialize(server);
             race.server.world.PreferredWorldRegistry.initialize(server);
         });
 
-        // Обработчик входа игрока - телепорт в предпочитаемый мир
+        // Обработчик входа игрока - оптимизированный с защитой от падения TPS
         net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             var player = handler.player;
-            var preferred = race.server.world.PreferredWorldRegistry.getPreferred(player.getUuid());
-            if (preferred != null) {
-                var dst = server.getWorld(preferred);
-                if (dst != null) {
-                    // Ваниль сама учтёт кровать/якорь для respawn; здесь лишь отправка в мир
-                    var spawnPos = dst.getSpawnPos();
-                    player.teleport(dst, spawnPos.getX() + 0.5, spawnPos.getY(), spawnPos.getZ() + 0.5, player.getYaw(), player.getPitch());
-                    LOGGER.info("[Race] Teleported {} to preferred world: {}", player.getName().getString(), preferred.getValue());
+            
+            // Используем оптимизированный вход
+            race.performance.JoinOptimizer.optimizedJoin(player).whenComplete((result, throwable) -> {
+                if (throwable != null) {
+                    LOGGER.warn("[Race] Error during optimized join for {}: {}", 
+                        player.getName().getString(), throwable.getMessage());
+                } else {
+                    LOGGER.info("[Race] Successfully processed join for {}", player.getName().getString());
                 }
-            }
+            });
         });
         
         // Страховка: регистрируем типы payload до регистрации приёмников,
@@ -845,7 +872,6 @@ public final class RaceServerInit implements ModInitializer {
             net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playC2S().register(race.net.SeedHandshakeC2SPayload.ID, race.net.SeedHandshakeC2SPayload.CODEC);
         } catch (Throwable ignored) {}
         try {
-            net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playC2S().register(race.net.PlayerProgressPayload.ID, race.net.PlayerProgressPayload.CODEC);
         } catch (Throwable ignored) {}
         try {
             net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playS2C().register(race.net.JoinRequestStatusPayload.ID, race.net.JoinRequestStatusPayload.CODEC);
@@ -853,6 +879,18 @@ public final class RaceServerInit implements ModInitializer {
         try {
             net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry.playS2C().register(race.net.TpsPayload.ID, race.net.TpsPayload.CODEC);
         } catch (Throwable ignored) {}
+        
+        // Включаем рассылку TPS по умолчанию
+        setTpsDisplayEnabled(true);
+        
+        // Инициализируем единый тик-скедулер с батчингом
+        race.runtime.TickBus.init();
+        
+        // Инициализируем системы оптимизации
+        race.memory.MemoryManager.forceCleanupAll(); // Очищаем при старте
+        race.batch.BatchProcessor.clearAllBatches(); // Очищаем батчи
+        race.monitor.PerformanceMonitor.resetStats(); // Сбрасываем статистику
+        
         // Сброс бюджета синхронной догрузки на каждый тик
         final ChunkSyncHelper.SyncBudget syncBudget = new ChunkSyncHelper.SyncBudget();
         final long[] tickStartTime = new long[1];
@@ -1116,7 +1154,12 @@ public final class RaceServerInit implements ModInitializer {
                 ServerPlayNetworking.send(p, new SeedAckS2CPayload(true, "", requested));
                 // Создаём/получаем персональный мир с этим сидом
                 var dst = EnhancedWorldManager.getOrCreateWorld(p.getServer(), p.getUuid(), requested, net.minecraft.world.World.OVERWORLD);
-                EnhancedWorldManager.teleportToWorld(p, dst);
+                
+                // Прогреваем чанки и кешируем безопасную позицию
+                race.server.world.SpawnCache.warmupAndCache(dst, dst.getSpawnPos(), 2);
+                
+                // Используем безопасную телепортацию
+                race.tp.SafeTeleport.toWorldSpawn(p, dst);
                 
                 // Обновляем последний использованный мир игрока
                 race.hub.HubManager.setLastWorldSeed(p.getUuid(), requested);
@@ -1139,6 +1182,13 @@ public final class RaceServerInit implements ModInitializer {
                         p.requestTeleport(bp.getX() + 0.5, bp.getY(), bp.getZ() + 0.5);
                     }
                 } catch (Throwable ignored) {}
+                // ВАЛИДАЦИЯ: проверяем сид перед отправкой
+                if (requested <= 0) {
+                    p.sendMessage(net.minecraft.text.Text.literal("Неверный сид: " + requested + ". Используйте /race seed <число>")
+                        .formatted(net.minecraft.util.Formatting.RED), false);
+                    return;
+                }
+                
                 // Отправляем сигнал клиенту для старта таймера
                 ServerPlayNetworking.send(p, new StartRacePayload(requested, System.currentTimeMillis()));
             });
@@ -1151,7 +1201,7 @@ public final class RaceServerInit implements ModInitializer {
 
         // Обновление времени гоночных миров теперь происходит в START_SERVER_TICK
         
-        // Периодический борд и обновление прогресса
+        // Периодический борд и обновление прогресса - теперь через TickBus
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             // Обновляем TPS каждый тик
             long tickTime = System.currentTimeMillis() - tickStartTime[0];
@@ -1160,97 +1210,8 @@ public final class RaceServerInit implements ModInitializer {
             // Автоматическая оптимизация производительности
             performAutoOptimization(server);
             
-            if (!active) return;
-            
-            int playerCount = server.getPlayerManager().getPlayerList().size();
-            int adaptiveInterval = getAdaptiveInterval(10, playerCount);
-            
-            // Адаптивное обновление прогресса игроков
-            if (++tick % adaptiveInterval == 0) {
-                // Обновляем прогресс всех игроков
-                for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-                    if (shouldUpdatePlayer(player.getUuid(), 1000)) { // 1 секунда базовый интервал
-                        RacePhaseManager.updatePlayerProgress(player);
-                        try { race.server.death.DeathEchoManager.recordTick(player); } catch (Throwable ignored) {}
-                        lastPlayerUpdate.put(player.getUuid(), System.currentTimeMillis());
-                    }
-                }
-            }
-            
-            // Убрано: периодический авто-сейв позиций
-            // Теперь позиции сохраняются только при явных событиях (spectate/join/return)
-            
-            // Удаляем временные призрачные фигуры (armor stand) со сроком жизни - реже при высокой нагрузке
-            int ghostCleanupInterval = getAdaptiveInterval(100, playerCount);
-            if (server.getTicks() % ghostCleanupInterval == 0) {
-                try {
-                    for (var w : server.getWorlds()) {
-                        java.util.List<net.minecraft.entity.decoration.ArmorStandEntity> list = w.getEntitiesByClass(net.minecraft.entity.decoration.ArmorStandEntity.class, new net.minecraft.util.math.Box(-3.0E7, -3.0E7, -3.0E7, 3.0E7, 3.0E7, 3.0E7), as -> as.getCommandTags().contains("race_ghost_fig"));
-                        for (var e : list) {
-                            if (e.age > 100) e.discard();
-                        }
-                    }
-                } catch (Throwable ignored) {}
-            }
-
-            // Отправляем обновленный борд - реже при высокой нагрузке
-            int boardInterval = getAdaptiveInterval(20, playerCount);
-            if (server.getTicks() % boardInterval == 0) {
-                var rows = RacePhaseManager.getRaceBoardData(server);
-                var payload = new RaceBoardPayload(rows);
-                for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
-                    ServerPlayNetworking.send(p, payload);
-                }
-            }
-            
-            // Отправляем TPS информацию если включено - реже при высокой нагрузке
-            if (tpsDisplayEnabled) {
-                int tpsInterval = getAdaptiveInterval(20, playerCount);
-                if (server.getTicks() % tpsInterval == 0) {
-                    var tpsPayload = new race.net.TpsPayload(currentTPS, true);
-                    for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
-                        ServerPlayNetworking.send(p, tpsPayload);
-                    }
-                }
-            }
-            
-            // Периодические призрачные фигуры после смерти - реже при высокой нагрузке
-            int deathEchoInterval = getAdaptiveInterval(20, playerCount);
-            if (server.getTicks() % deathEchoInterval == 0) {
-                try { race.server.death.DeathEchoManager.tickGhosts(server); } catch (Throwable ignored) {}
-            }
-
-            // Лайв‑точки параллельных игроков - значительно реже при высокой нагрузке
-            int parallelInterval = getAdaptiveInterval(40, playerCount);
-            if (server.getTicks() % parallelInterval == 0 && race.server.RaceServerInit.isDisplayParallelPlayers()) {
-                for (ServerPlayerEntity viewer : server.getPlayerManager().getPlayerList()) {
-                    String viewerKey = viewer.getServerWorld().getRegistryKey().getValue().toString();
-                    if (!viewerKey.startsWith("fabric_race:")) continue;
-                    long viewerSeed = parseSeedFromWorldKey(viewerKey);
-                    boolean viewerNether = viewer.getServerWorld().getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER);
-                    boolean viewerEnd = viewer.getServerWorld().getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END);
-                    java.util.ArrayList<race.net.ParallelPlayersPayload.Point> pts = new java.util.ArrayList<>();
-                    for (ServerPlayerEntity other : server.getPlayerManager().getPlayerList()) {
-                        if (other == viewer) continue;
-                        String otherKey = other.getServerWorld().getRegistryKey().getValue().toString();
-                        if (!otherKey.startsWith("fabric_race:")) continue;
-                        long otherSeed = parseSeedFromWorldKey(otherKey);
-                        if (otherSeed != viewerSeed) continue;
-                        boolean otherNether = other.getServerWorld().getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER);
-                        boolean otherEnd = other.getServerWorld().getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END);
-                        if (viewerNether != otherNether || viewerEnd != otherEnd) continue; // разное измерение
-                        // Если мы уже в одном и том же инстансе мира — это союзник рядом, призрак не рисуем
-                        if (other.getServerWorld().getRegistryKey().equals(viewer.getServerWorld().getRegistryKey())) continue;
-                        byte type = detectActivityType(other);
-                        String name = other.getGameProfile().getName();
-                        pts.add(new race.net.ParallelPlayersPayload.Point(name, other.getX(), other.getY(), other.getZ(), type));
-                    }
-                    if (!pts.isEmpty()) {
-                        race.net.ParallelPlayersPayload pp = new race.net.ParallelPlayersPayload(pts);
-                        ServerPlayNetworking.send(viewer, pp);
-                    }
-                }
-            }
+            // TickBus теперь управляет всеми периодическими задачами
+            // Старый код перенесен в TickBus для централизованного управления
         }); // [1]
 
         // Обработка отложенных join-запросов (каждый тик)
@@ -1544,18 +1505,6 @@ public final class RaceServerInit implements ModInitializer {
             }
         });
 
-        // Приём активности и прогресса от клиента (обновляем activity в менеджере)
-        ServerPlayNetworking.registerGlobalReceiver(PlayerProgressPayload.ID, (payload, ctx) -> {
-            ctx.server().execute(() -> {
-                var p = ctx.player();
-                var data = race.hub.ProgressSyncManager.getPlayerProgress(p.getUuid());
-                if (data != null) {
-                    data.setCurrentTime(System.currentTimeMillis());
-                    data.setCurrentStage(payload.currentStage());
-                    data.setActivity(payload.activity());
-                }
-            });
-        });
 
         // Призраки смерти: запись на смерть и восстановление в мирах
         net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.ALLOW_DEATH.register((player, source, amount) -> {
@@ -1852,20 +1801,7 @@ public final class RaceServerInit implements ModInitializer {
             String destinationKey = destination.getRegistryKey().getValue().toString();
             
             // Проверяем переходы в кастомные миры
-            if (destinationKey.startsWith("fabric_race:")) {
-                // Инициализируем время мира если его еще нет (используем фиксированное время утра)
-                initWorldIfAbsent(destination, 1000L);
-                
-                // Переход в кастомный Nether
-                if (destination.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER)) {
-                    AchievementManager.checkAndGrantAchievements(player, "enter_nether", player.getBlockPos());
-                }
-                // Переход в кастомный End
-                else if (destination.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END)) {
-                    AchievementManager.checkAndGrantAchievements(player, "enter_end", player.getBlockPos());
-                }
-            }
-            
+
             if (!destination.getDimensionEntry().matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER)) return;
             
             // Пропускаем персональные миры - они обрабатываются EnhancedWorldManager
@@ -1926,11 +1862,20 @@ public final class RaceServerInit implements ModInitializer {
         
         // S2C payload не нужно регистрировать на сервере - он только отправляется
         
+ 
+
         // Инициализируем службу виртуального времени
         race.server.SlotTimeService.init();
         
         // Регистрируем команды времени
         race.server.commands.RaceTimeCommands.register();
+    }
+    
+    /**
+     * Возвращает время начала гонки (t0)
+     */
+    public static long getT0Ms() {
+        return t0ms;
     }
 
 }

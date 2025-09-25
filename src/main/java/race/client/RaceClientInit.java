@@ -3,10 +3,15 @@ package race.client;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import race.net.StartRacePayload;
 import race.net.TpsPayload;
 import race.net.RaceBoardPayload;
 import race.net.RaceTimeSyncS2CPayload;
+import race.net.ParallelPlayersPayload;
+import race.net.GhostTrailPayload;
+import race.client.GhostOverlay;
 
 public final class RaceClientInit implements ClientModInitializer {
     @Override
@@ -36,7 +41,66 @@ public final class RaceClientInit implements ClientModInitializer {
             ctx.client().execute(() -> race.client.time.ClientSlotTimeState.put(payload.worldId(), payload.time()));
         });
 
+        // Приём лайв‑точек параллельных игроков — шлём в DeathEchoRenderer
+        ClientPlayNetworking.registerGlobalReceiver(ParallelPlayersPayload.ID, (payload, ctx) ->
+                ctx.client().execute(() -> {
+                    // 1) Новый дальний шлейф
+                    java.util.Map<String, java.util.List<race.net.GhostTrailPayload.Point>> byPlayer = new java.util.HashMap<>();
+                    for (var p : payload.points()) {
+                        byPlayer.computeIfAbsent(p.name(), k -> new java.util.ArrayList<>())
+                                .add(new race.net.GhostTrailPayload.Point(p.x(), p.y(), p.z()));
+                    }
+                    byPlayer.forEach((name, pts) ->
+                            race.client.death.DeathEchoRenderer.addTrail(name, "live", pts));
+
+                    // 2) Legacy-дымка поверх HUD (если нужна)
+                    race.client.GhostOverlay.addLive("__live__", payload.points());
+                })
+        );
+
+        // Приём призрачных шлейфов
+        ClientPlayNetworking.registerGlobalReceiver(race.net.GhostTrailPayload.ID, (payload, ctx) ->
+                ctx.client().execute(() ->
+                        race.client.death.DeathEchoRenderer.addTrail(payload.playerName(), payload.cause(), payload.points())
+                )
+        );
+
+
+
+        // Приём подтверждения сида
+        ClientPlayNetworking.registerGlobalReceiver(race.net.SeedAckS2CPayload.ID, (payload, ctx) ->
+                ctx.client().execute(() -> {
+                    if (payload.accepted()) {
+                        race.client.RaceClientEvents.setStartFromServer(payload.seed(), System.currentTimeMillis());
+                        System.out.println("[Race] Client received seed ack: seed=" + payload.seed());
+                    }
+                })
+        );
+
+
+
         // Тикер RTA/прогресса
         RaceClientEvents.hookClientTick();
+        
+        // Клиентский эмиттер дымки
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> 
+            race.client.death.DeathEchoRenderer.clientTick());
+        
+        // Пакет маркеров смерти уже зарегистрирован в FabricRaceMod
+        
+        // Рендер маркеров смерти и шлейфов
+        WorldRenderEvents.END.register(race.client.death.DeathEchoRenderer::render);
+        
+        // Инициализируем HUD
+        EnhancedRaceHud.initOnce();
+        
+        // Рендер HUD гонки
+        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
+            EnhancedRaceHud.render(drawContext);
+        });
+        
+        // Очищаем кэш при отключении
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> 
+            race.client.death.DeathEchoRenderer.clearAll());
     }
 }

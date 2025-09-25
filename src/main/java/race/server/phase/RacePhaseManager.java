@@ -5,7 +5,6 @@ import net.minecraft.advancement.AdvancementProgress;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Identifier;
-import race.net.PlayerProgressPayload;
 import race.net.RaceBoardPayload;
 import race.server.world.EnhancedWorldManager;
 
@@ -194,37 +193,11 @@ public final class RacePhaseManager {
                 .toList();
     }
     
-    /**
-     * Получает детальный прогресс игрока
-     */
-    public static PlayerProgressPayload getPlayerProgress(ServerPlayerEntity player) {
-        PlayerRaceData data = playerData.get(player.getUuid());
-        if (data == null) {
-            return new PlayerProgressPayload(
-                player.getGameProfile().getName(),
-                0L,
-                "Overworld",
-                Map.of(),
-                getCurrentWorldName(player),
-                ""
-            );
-        }
-        
-        return new PlayerProgressPayload(
-            player.getGameProfile().getName(),
-            data.getRtaMs(),
-            data.getCurrentStage(),
-            data.getMilestoneTimes(),
-            getCurrentWorldName(player),
-            (race.hub.ProgressSyncManager.getPlayerProgress(player.getUuid()) != null ?
-                    race.hub.ProgressSyncManager.getPlayerProgress(player.getUuid()).getActivity() : "")
-        );
-    }
     
     /**
      * Получает название текущего мира
      */
-    private static String getCurrentWorldName(ServerPlayerEntity player) {
+    public static String getCurrentWorldName(ServerPlayerEntity player) {
         String worldKey = player.getServerWorld().getRegistryKey().getValue().toString();
         if (worldKey.contains("the_end")) return "End";
         if (worldKey.contains("nether")) return "Nether";

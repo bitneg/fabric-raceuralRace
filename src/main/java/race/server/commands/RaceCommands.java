@@ -833,6 +833,14 @@ public final class RaceCommands {
         for (ServerPlayerEntity p : targets) {
             long s = race.hub.HubManager.getPlayerSeedChoice(p.getUuid());
             if (s < 0) s = race.server.world.ServerRaceConfig.GLOBAL_SEED;
+            
+            // ВАЛИДАЦИЯ: проверяем сид перед стартом
+            if (s <= 0) {
+                p.sendMessage(net.minecraft.text.Text.literal("Сначала выберите сид: /race seed <число> или /race setup <seed>")
+                    .formatted(net.minecraft.util.Formatting.RED), false);
+                continue; // пропускаем этого игрока
+            }
+            
             race.server.RaceServerInit.personalStart(p, s);
         }
         try { race.server.RaceServerInit.startRace(race.server.world.ServerRaceConfig.GLOBAL_SEED, System.currentTimeMillis()); } catch (Throwable ignored) {}

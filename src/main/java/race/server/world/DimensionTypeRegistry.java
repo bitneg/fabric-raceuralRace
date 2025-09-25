@@ -25,7 +25,8 @@ public class DimensionTypeRegistry {
     
     public static void register() {
         // ИСПРАВЛЕНИЕ: Регистрируем dimension type ДО заморозки реестра
-        ServerLifecycleEvents.SERVER_STARTING.register(DimensionTypeRegistry::onServerStarting);
+        // Используем более раннее событие
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(DimensionTypeRegistry::onServerStarting);
         System.out.println("Dimension type registry hooks installed");
     }
     

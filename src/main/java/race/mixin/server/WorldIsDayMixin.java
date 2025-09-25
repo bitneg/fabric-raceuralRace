@@ -29,11 +29,7 @@ public abstract class WorldIsDayMixin {
         // День: вне диапазона 13000-23000 (ночь)
         boolean isDay = tod < 13000L || tod > 23000L;
         cir.setReturnValue(isDay);
-        
-        // Логируем только при изменении состояния для уменьшения спама
-        if (System.currentTimeMillis() % 5000 < 100) { // каждые ~5 секунд
-            System.out.println("[SlotTime] isDay: " + w.getRegistryKey().getValue() + 
-                             " time=" + tod + " day=" + isDay);
+
         }
     }
-}
+

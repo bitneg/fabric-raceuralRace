@@ -47,7 +47,7 @@ public class RaceMenuScreen extends Screen {
 		} catch (Throwable ignored) {}
 		seedField = new TextFieldWidget(this.textRenderer, centerX - 100, y, 200, 20, Text.literal("seed"));
 		if (this.client != null && this.client.player != null) {
-			seedField.setText(String.valueOf(System.currentTimeMillis() % 1000000));
+			seedField.setText(String.valueOf(generateVanillaLikeSeed()));
 		}
 		this.addSelectableChild(seedField);
 
@@ -91,8 +91,14 @@ public class RaceMenuScreen extends Screen {
 	}
 
 	private void onRandom() {
-		long rnd = java.util.concurrent.ThreadLocalRandom.current().nextLong(1_000_000_000_000L);
-		seedField.setText(Long.toString(rnd));
+		seedField.setText(Long.toString(generateVanillaLikeSeed()));
+	}
+	
+	private long generateVanillaLikeSeed() {
+		java.util.Random random = new java.util.Random();
+		// Генерируем сид как в ванильном Minecraft - в разумном диапазоне
+		// Обычно используются сиды от -2^31 до 2^31-1 для лучшей совместимости
+		return random.nextLong() & 0x7FFFFFFFFFFFFFFFL; // Убираем знаковый бит для положительных значений
 	}
 
 	private void onClose() {
