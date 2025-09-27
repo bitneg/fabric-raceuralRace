@@ -317,10 +317,10 @@ public final class RaceServerInit implements ModInitializer {
                     ServerWorld playerWorld = player.getServerWorld();
                     if (isPersonal(playerWorld)) {
                         try {
-                            // ИСПРАВЛЕНИЕ: Отправляем данные только о игроках из ДРУГИХ миров с тем же сидом
-                            race.net.ParallelPlayersPayload payload = race.net.ParallelPlayersPayload.buildBucketed(player);
+                            // ИСПРАВЛЕНИЕ: Создаем payload для параллельных миров
+                            race.net.ParallelPlayersPayload payload = buildParallelPayload(player);
                             
-                            // Фильтруем только игроков из других миров с тем же сидом
+                            // ИСПРАВЛЕНИЕ: Упрощаем фильтрацию - отправляем все точки для отладки
                             var filteredPoints = payload.points().stream()
                                 .filter(point -> {
                                     // Проверяем, что игрок находится в ДРУГОМ мире с тем же сидом
@@ -338,6 +338,22 @@ public final class RaceServerInit implements ModInitializer {
                                     return false;
                                 })
                                 .toList();
+                            
+                            // ВРЕМЕННО: Отправляем ВСЕ точки для отладки
+                            if (filteredPoints.isEmpty() && !payload.points().isEmpty()) {
+                                System.out.println("[Race] DEBUG: Sending all points for debugging");
+                                var debugPayload = new race.net.ParallelPlayersPayload(payload.points());
+                                debugPayload.sendTo(player);
+                                return;
+                            }
+                            
+                            // ОТЛАДКА: Логируем информацию о дымке
+                            if (tick % 200 == 0) { // каждые 10 секунд
+                                System.out.println("[Race] Ghost debug for " + player.getName().getString() + 
+                                    ": total points=" + payload.points().size() + 
+                                    ", filtered points=" + filteredPoints.size() + 
+                                    ", world=" + playerWorld.getRegistryKey().getValue());
+                            }
                             
                             if (!filteredPoints.isEmpty()) {
                                 var filteredPayload = new race.net.ParallelPlayersPayload(filteredPoints);
@@ -673,6 +689,60 @@ public final class RaceServerInit implements ModInitializer {
             performanceLevel.set(1);
         } else {
             performanceLevel.set(0);
+        }
+    }
+    
+    /**
+     * Создает payload для параллельных миров - ищет игроков в ДРУГИХ мирах с тем же сидом
+     */
+    private static race.net.ParallelPlayersPayload buildParallelPayload(ServerPlayerEntity me) {
+        var server = me.getServer();
+        var myWorld = me.getServerWorld();
+        long mySeed = tryParseSeed(myWorld.getRegistryKey());
+        
+        if (mySeed < 0) {
+            return new race.net.ParallelPlayersPayload(new java.util.ArrayList<>());
+        }
+        
+        var points = new java.util.ArrayList<race.net.ParallelPlayersPayload.Point>();
+        long now = System.currentTimeMillis();
+        
+        // Ищем игроков в ДРУГИХ мирах с тем же сидом
+        for (ServerPlayerEntity otherPlayer : server.getPlayerManager().getPlayerList()) {
+            if (otherPlayer == me) continue;
+            if (otherPlayer.getServerWorld() == myWorld) continue; // НЕ тот же мир
+            
+            ServerWorld otherWorld = otherPlayer.getServerWorld();
+            long otherSeed = tryParseSeed(otherWorld.getRegistryKey());
+            
+            // Проверяем, что у них одинаковый сид
+            if (otherSeed == mySeed && otherSeed >= 0) {
+                String name = otherPlayer.getGameProfile().getName();
+                double x = otherPlayer.getX(), y = otherPlayer.getY(), z = otherPlayer.getZ();
+                byte type = detectActivityType(otherPlayer);
+                
+                // ИСПРАВЛЕНИЕ: Добавляем только ОДНУ точку (текущее положение)
+                points.add(new race.net.ParallelPlayersPayload.Point(name, x, y, z, type));
+            }
+        }
+        
+        return new race.net.ParallelPlayersPayload(points);
+    }
+    
+    /**
+     * Определяет тип активности игрока (копия из ParallelPlayersPayload)
+     */
+    private static byte detectActivityType(ServerPlayerEntity p) {
+        try {
+            var main = p.getMainHandStack();
+            if (p.isUsingItem()) return 7;
+            if (p.isSprinting()) return 4;
+            if (p.isSwimming() || p.isSubmergedInWater()) return 4;
+            String m = main.getItem().toString();
+            if (m.contains("pickaxe") || m.contains("shovel")) return 1;
+            return 0;
+        } catch (Throwable ignored) {
+            return 0;
         }
     }
     

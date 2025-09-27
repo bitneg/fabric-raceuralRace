@@ -24,6 +24,8 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.entity.EquipmentSlot;
 
+import static com.mojang.text2speech.Narrator.LOGGER;
+
 /**
  * Менеджер «призраков смерти»: сохраняет события и спавнит маркеры в персональных мирах.
  */
@@ -73,10 +75,18 @@ public final class DeathEchoManager {
         long seed = tryParseSeed(player.getServerWorld().getRegistryKey());
         if (seed < 0) return; // не персональный мир fabric_race
         
-        // Сохраняем позицию возврата при смерти в персональном мире
+        // ИСПРАВЛЕНИЕ: НЕ сохраняем позицию смерти, если у игрока уже есть сохраненная позиция
         String worldNamespace = player.getServerWorld().getRegistryKey().getValue().getNamespace();
         if ("fabric_race".equals(worldNamespace)) {
-            race.server.world.ReturnPointRegistry.saveCurrent(player);
+            // Проверяем, есть ли уже сохраненная позиция (например, от join/spectate)
+            boolean hasExistingReturnPoint = race.server.world.ReturnPointRegistry.hasReturnPoint(player.getUuid());
+            if (!hasExistingReturnPoint) {
+                // Сохраняем позицию смерти только если нет другой сохраненной позиции
+                race.server.world.ReturnPointRegistry.saveCurrent(player);
+                LOGGER.info("[Race] Saved death position as return point for player: {}", player.getGameProfile().getName());
+            } else {
+                LOGGER.info("[Race] Player {} already has return point, not overwriting with death position", player.getGameProfile().getName());
+            }
         }
         
         String dim = getDimKey(player.getServerWorld());

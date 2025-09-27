@@ -100,16 +100,8 @@ public final class DeathEchoRenderer {
                 .map(p -> new Vec3d(p.x(), p.y(), p.z()))
                 .toList();
 
-        TrailData existing = ACTIVE_TRAILS.get(playerId);
-        if (existing == null || existing.isExpired()) {
-            ACTIVE_TRAILS.put(playerId, new TrailData(playerId, cause, clampPoints(incoming, MAX_TRAIL_POINTS)));
-        } else {
-            // merge
-            ArrayList<Vec3d> merged = new ArrayList<>(existing.points);
-            merged.addAll(incoming);
-            while (merged.size() > MAX_TRAIL_POINTS) merged.remove(0);
-            ACTIVE_TRAILS.put(playerId, new TrailData(playerId, cause, merged));
-        }
+        // ИСПРАВЛЕНИЕ: Показываем только текущее положение (не создаем траекторию)
+        ACTIVE_TRAILS.put(playerId, new TrailData(playerId, cause, clampPoints(incoming, 1))); // Только 1 точка
         // Сбрасываем кэш геометрии этого игрока, чтобы обновить полосы
         GEOMETRY_CACHE.remove(playerId);
     }

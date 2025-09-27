@@ -73,13 +73,14 @@ public final class GhostOverlay {
             
             Deque<double[]> dq = TRAILS.computeIfAbsent(k, x -> new ArrayDeque<>());
             
-            // Добавляем все точки игрока (не очищаем старые - создаем траекторию)
+            // ИСПРАВЛЕНИЕ: Показываем только текущее положение (очищаем старые точки)
+            dq.clear(); // Очищаем старые точки
             for (var p : playerPoints) {
                 dq.addLast(new double[]{p.x(), p.y(), p.z(), p.type()});
             }
             
-            // Ограничиваем размер траектории
-            while (dq.size() > 20) {
+            // Ограничиваем размер до 1 точки (только текущее положение)
+            while (dq.size() > 1) {
                 dq.removeFirst();
             }
             
