@@ -12,6 +12,7 @@ import net.minecraft.world.GameRules;
 import net.minecraft.util.ActionResult;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -26,6 +27,10 @@ public final class SlotTimeService {
     private static final Map<RegistryKey<World>, Long> TRANSITION_TARGET = new ConcurrentHashMap<>();
     private static final Map<RegistryKey<World>, Long> TRANSITION_SPEED = new ConcurrentHashMap<>();
     private static final long MORNING_TICKS = 1000L; // ванильное "раннее утро"
+    
+    // Отслеживание инициализации структур
+    private static final Set<RegistryKey<World>> STRUCTURES_INITIALIZED = ConcurrentHashMap.newKeySet();
+    private static final Map<RegistryKey<World>, Integer> WORLD_TICK_COUNT = new ConcurrentHashMap<>();
 
     public static void init() {
         // Тик: удерживаем DO_DAYLIGHT_CYCLE=false и тикаем виртуальное время
@@ -81,16 +86,24 @@ public final class SlotTimeService {
     public static void initIfAbsent(ServerWorld w, long initial) {
         if (!isRaceWorld(w)) return;
         
-        SLOT_TIME.putIfAbsent(w.getRegistryKey(), initial);
-        SLOT_SPEED.putIfAbsent(w.getRegistryKey(), 1L);
+        RegistryKey<World> key = w.getRegistryKey();
+        boolean wasInitialized = SLOT_TIME.containsKey(key);
+        
+        SLOT_TIME.putIfAbsent(key, initial);
+        SLOT_SPEED.putIfAbsent(key, 1L);
         
         // Гарантируем отключение DO_DAYLIGHT_CYCLE
         if (w.getGameRules().get(GameRules.DO_DAYLIGHT_CYCLE).get()) {
             w.getGameRules().get(GameRules.DO_DAYLIGHT_CYCLE).set(false, w.getServer());
         }
         
-        System.out.println("[SlotTime] Инициализация виртуального времени: " + 
-            w.getRegistryKey().getValue() + " = " + initial);
+        if (!wasInitialized) {
+            System.out.println("[SlotTime] Инициализация виртуального времени: " + 
+                key.getValue() + " = " + initial);
+        } else {
+            System.out.println("[SlotTime] Время уже инициализировано для: " + 
+                key.getValue() + " = " + SLOT_TIME.get(key));
+        }
     }
 
     /**
@@ -176,6 +189,33 @@ public final class SlotTimeService {
             if (w == null) continue;
             if (!isRaceWorld(w)) continue;
             
+            // Дополнительная проверка на валидность мира
+            try {
+                if (w.getChunkManager() == null) continue;
+            } catch (Exception ex) {
+                System.err.println("[SlotTime] World " + key.getValue() + " is invalid, skipping: " + ex.getMessage());
+                continue;
+            }
+            
+            // Инициализируем структуры при первом тике мира
+            if (!STRUCTURES_INITIALIZED.contains(key)) {
+                // Увеличиваем счетчик тиков для мира
+                int tickCount = WORLD_TICK_COUNT.getOrDefault(key, 0) + 1;
+                WORLD_TICK_COUNT.put(key, tickCount);
+                
+                // Инициализируем структуры только после 200 тиков
+                if (tickCount >= 200) {
+                    try {
+                        initializeStructuresForWorld(w);
+                        STRUCTURES_INITIALIZED.add(key);
+                        WORLD_TICK_COUNT.remove(key); // Очищаем счетчик
+                        System.out.println("[SlotTime] Structures initialized for world: " + key.getValue());
+                    } catch (Exception ex) {
+                        System.err.println("[SlotTime] Failed to initialize structures for world " + key.getValue() + ": " + ex.getMessage());
+                    }
+                }
+            }
+            
             long cur = e.getValue();
             long next;
             
@@ -215,6 +255,72 @@ public final class SlotTimeService {
                     System.err.println("[SlotTime] Ошибка отправки времени: " + ex.getMessage());
                 }
             });
+            
+            // Отладочная информация каждые 20 секунд
+            if (finalNext % 400 == 0) { // каждые 20 секунд игрового времени
+                System.out.println("[SlotTime] Время в мире " + key.getValue() + ": " + finalNext + " (игроков: " + w.getPlayers().size() + ")");
+            }
+        }
+    }
+    
+    /**
+     * Инициализирует структуры для мира при первом тике
+     */
+    private static void initializeStructuresForWorld(ServerWorld world) {
+        try {
+            // Получаем позицию спавна
+            var spawnPos = world.getSpawnPos();
+            int cx = spawnPos.getX() >> 4;
+            int cz = spawnPos.getZ() >> 4;
+            
+            // Загружаем чанки вокруг спавна для инициализации структур
+            for (int x = -2; x <= 2; x++) {
+                for (int z = -2; z <= 2; z++) {
+                    try {
+                        // Загружаем чанк с полной генерацией для инициализации структур
+                        var chunk = world.getChunk(cx + x, cz + z, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                        if (chunk != null) {
+                            // Принудительно инициализируем структуры в чанке
+                            var structureAccessor = world.getStructureAccessor();
+                            if (structureAccessor != null) {
+                                // Проверяем, что структуры доступны
+                                var chunkPos = chunk.getPos();
+                                // ИСПРАВЛЕНИЕ: Используем правильный API для инициализации структур
+                                try {
+                                    // Принудительно загружаем структуры для этого чанка
+                                    // Это заставит Minecraft инициализировать StructureHolder для чанка
+                                    // Используем Predicate<Structure> который принимает все структуры
+                                    structureAccessor.getStructureStarts(chunkPos, structure -> true);
+                                } catch (Exception e) {
+                                    // Логируем ошибки инициализации структур для отладки
+                                    System.out.println("[Race] StructureAccessor error in SlotTimeService: " + e.getMessage());
+                                    // Игнорируем ошибки инициализации структур
+                                }
+                            } else {
+                                // Если StructureAccessor null, пропускаем инициализацию
+                                System.out.println("[Race] StructureAccessor is null in SlotTimeService for world: " + world.getRegistryKey().getValue());
+                            }
+                        }
+                    } catch (Exception ignored) {
+                        // Игнорируем ошибки инициализации отдельных чанков
+                    }
+                }
+            }
+            
+            // ИСПРАВЛЕНИЕ: Включаем спаун мобов после полной инициализации структур
+            var server = world.getServer();
+            // Упрощенная логика включения спавна мобов
+            server.execute(() -> {
+                // Проверяем, что мир все еще загружен
+                if (server.getWorld(world.getRegistryKey()) != null) {
+                    // Включаем спавн мобов сразу после инициализации структур
+                    world.getGameRules().get(net.minecraft.world.GameRules.DO_MOB_SPAWNING).set(true, server);
+                    System.out.println("[SlotTime] Enabled mob spawning for world: " + world.getRegistryKey().getValue());
+                }
+            });
+            
+        } catch (Exception e) {
+            System.err.println("[SlotTime] Error initializing structures: " + e.getMessage());
         }
     }
 

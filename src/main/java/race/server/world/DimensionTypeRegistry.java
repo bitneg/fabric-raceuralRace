@@ -24,10 +24,9 @@ public class DimensionTypeRegistry {
     private static RegistryEntry<DimensionType> customDimensionTypeEntry = null;
     
     public static void register() {
-        // ИСПРАВЛЕНИЕ: Регистрируем dimension type ДО заморозки реестра
-        // Используем более раннее событие
-        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING.register(DimensionTypeRegistry::onServerStarting);
-        System.out.println("Dimension type registry hooks installed");
+        // ИСПРАВЛЕНИЕ: Не регистрируем dimension_type, используем существующий vanilla overworld
+        // Это предотвращает ошибку "Registry is already frozen"
+        System.out.println("Dimension type registry hooks installed (using vanilla overworld)");
     }
     
     private static void onServerStarting(MinecraftServer server) {
@@ -56,23 +55,35 @@ public class DimensionTypeRegistry {
             DimensionType customType = createVanillaOverworldCopy(registryManager);
             
             if (dimensionTypeRegistry instanceof MutableRegistry<DimensionType> mutableRegistry) {
-                // ИСПРАВЛЕНИЕ: Добавляем и сохраняем entry для использования
-                customDimensionTypeEntry = mutableRegistry.add(
-                    CUSTOM_OVERWORLD_KEY, 
-                    customType, 
-                    RegistryEntryInfo.DEFAULT
-                );
-                
-                registered = true;
-                System.out.println("✓ Custom dimension type registered: " + CUSTOM_OVERWORLD_ID);
-                System.out.println("✓ Custom dimension type entry: " + customDimensionTypeEntry);
-                System.out.println("✓ Entry key: " + customDimensionTypeEntry.getKey());
-                
-                // Проверяем регистрацию
-                if (dimensionTypeRegistry.containsId(CUSTOM_OVERWORLD_ID)) {
-                    System.out.println("✓ Verification successful");
-                } else {
-                    System.out.println("✗ Verification failed");
+                try {
+                    // ИСПРАВЛЕНИЕ: Добавляем и сохраняем entry для использования
+                    customDimensionTypeEntry = mutableRegistry.add(
+                        CUSTOM_OVERWORLD_KEY, 
+                        customType, 
+                        RegistryEntryInfo.DEFAULT
+                    );
+                    
+                    registered = true;
+                    System.out.println("✓ Custom dimension type registered: " + CUSTOM_OVERWORLD_ID);
+                    System.out.println("✓ Custom dimension type entry: " + customDimensionTypeEntry);
+                    System.out.println("✓ Entry key: " + customDimensionTypeEntry.getKey());
+                    
+                    // Проверяем регистрацию
+                    if (dimensionTypeRegistry.containsId(CUSTOM_OVERWORLD_ID)) {
+                        System.out.println("✓ Verification successful");
+                    } else {
+                        System.out.println("✗ Verification failed");
+                    }
+                } catch (IllegalStateException e) {
+                    if (e.getMessage().contains("Registry is already frozen")) {
+                        System.err.println("Registry is already frozen, using vanilla overworld as fallback");
+                        // Fallback: используем vanilla overworld dimension type
+                        customDimensionTypeEntry = dimensionTypeRegistry.getEntry(DimensionTypes.OVERWORLD).orElse(null);
+                        registered = true;
+                        System.out.println("✓ Using vanilla overworld dimension type as fallback");
+                    } else {
+                        throw e;
+                    }
                 }
                 
             } else {
@@ -127,13 +138,9 @@ public class DimensionTypeRegistry {
         return customDimensionTypeEntry;
     }
     
-    // Fallback - используем vanilla overworld если кастомный недоступен
+    // ИСПРАВЛЕНИЕ: Всегда используем vanilla overworld dimension type
     public static RegistryEntry<DimensionType> getSafeDimensionTypeEntry(MinecraftServer server) {
-        if (customDimensionTypeEntry != null) {
-            return customDimensionTypeEntry;
-        }
-        
-        // Fallback к vanilla overworld
+        // Всегда используем vanilla overworld - это предотвращает проблемы с замороженным реестром
         var registry = server.getRegistryManager().get(RegistryKeys.DIMENSION_TYPE);
         return registry.entryOf(DimensionTypes.OVERWORLD);
     }

@@ -71,6 +71,12 @@ public class RaceMenuScreen extends Screen {
         this.addDrawableChild(ghostsButton);
 
         rebuildLobbyButtons();
+        
+        // Отправляем запрос списка лобби
+        trySend("/race lobbylist");
+        page = 0;
+        lobby = java.util.List.of();
+        rebuildLobbyButtons();
 	}
 
 	private void onReady() {
@@ -84,7 +90,7 @@ public class RaceMenuScreen extends Screen {
 				return;
 			}
 		}
-		// ИСПРАВЛЕНИЕ: Выполняем команды автоматически, но только если игрок в хабе
+		// ИСПРАВЛЕНИЕ: Создаем новый персональный мир с выбранным сидом (становимся лидером группы)
 		trySend("/race seed " + seedField.getText());
 		trySend("/race ready");
 		this.close();
@@ -111,7 +117,7 @@ public class RaceMenuScreen extends Screen {
 	}
 
 	private void onStart() {
-		// Только разморозка и запуск для всей группы (миры уже должны быть готовы)
+		// ИСПРАВЛЕНИЕ: Лидер группы запускает гонку через команду go (personalGo на сервере)
 		trySend("/race go");
 		this.close();
 	}
@@ -245,9 +251,9 @@ public class RaceMenuScreen extends Screen {
                         return;
                     }
                 }
-                // ИСПРАВЛЕНИЕ: Выполняем команды автоматически, но только если игрок в хабе
-                trySend("/race seed " + e.seed());
-                trySend("/race ready");
+                // ИСПРАВЛЕНИЕ: При нажатии "Race" создаем параллельный мир с тем же сидом но на свободном слоте
+                trySend("/race seed " + e.seed()); // Устанавливаем тот же сид
+                trySend("/race parallel " + e.playerName()); // Новая команда для параллельной гонки
                 this.close();
             }).dimensions(buttonsX, y - 10, 60, 20).build();
             ButtonWidget joinBtn = ButtonWidget.builder(Text.literal("Join"), b -> {

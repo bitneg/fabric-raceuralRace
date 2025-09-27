@@ -41,6 +41,11 @@ public final class WorldManager {
     public static void debugAllSlots() {
         System.out.println("[Race] WorldManager slots: " + PLAYER_SLOTS);
     }
+    
+    // НОВОЕ: Метод для проверки занятости слота
+    public static boolean isSlotOccupied(int slot) {
+        return PLAYER_SLOTS.containsValue(slot);
+    }
 
     public static ServerWorld getLobby(MinecraftServer server) {
         return server.getOverworld();

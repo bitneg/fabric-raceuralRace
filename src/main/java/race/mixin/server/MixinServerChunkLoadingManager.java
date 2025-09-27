@@ -46,13 +46,13 @@ public abstract class MixinServerChunkLoadingManager {
                         int viewDistance,
                         boolean dsync,
                         CallbackInfo ci) {
+        // ИСПРАВЛЕНИЕ: Не обращаемся к getChunkManager() в конструкторе
+        // Это предотвращает NPE когда ChunkManager еще не готов
         try {
             long worldSeed = this.world.getSeed();
-            NoiseConfig noise = this.world.getChunkManager().getNoiseConfig();
-            LOGGER.info("[Race] ChunkLoadingManager init: world={}, seed={}, noiseConfig={}",
+            LOGGER.info("[Race] ChunkLoadingManager init: world={}, seed={}",
                     this.world.getRegistryKey().getValue(),
-                    worldSeed,
-                    noise != null ? "ok" : "null");
+                    worldSeed);
         } catch (Throwable t) {
             LOGGER.warn("[Race] ChunkLoadingManager log failed: {}", t.toString());
         }

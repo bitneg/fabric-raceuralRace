@@ -33,6 +33,9 @@ public class SpawnHelperMixin {
             return; // Обычная логика для не-гоночных миров
         }
         
+        // ИСПРАВЛЕНИЕ: Убираем проверку StructureAccessor - она не нужна
+        // StructureAccessor защищен в StructureAccessorMixin
+        
         // В гоночных мирах используем виртуальное время для враждебных мобов
         if (group == SpawnGroup.MONSTER) {
             // Используем виртуальное время из SlotTimeService

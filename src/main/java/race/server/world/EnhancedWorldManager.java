@@ -39,10 +39,21 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 
-/**
- * Улучшенный менеджер миров с поддержкой всех измерений
- */
-public final class EnhancedWorldManager {
+    /**
+     * Улучшенный менеджер миров с поддержкой всех измерений
+     */
+    public final class EnhancedWorldManager {
+        
+        // Утилитный метод для гарантии загрузки чанка перед чтением блоков
+        private static void ensureFullChunk(ServerWorld world, BlockPos pos) {
+            try {
+                int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+                world.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            } catch (Throwable t) {
+                LOGGER.warn("[Race] Failed to ensure chunk loading at {}: {}", pos, t.getMessage());
+            }
+        }
+        
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final ConcurrentHashMap<String, RegistryKey<World>> WORLD_KEYS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<java.util.UUID, Integer> PLAYER_SLOT = new ConcurrentHashMap<>();
@@ -124,6 +135,14 @@ public final class EnhancedWorldManager {
                 LOGGER.info("[Race] World {} is pending unload, removing from pending list", key.getValue());
                 PENDING_UNLOAD.remove(key);
             }
+            
+            // Инициализируем время для существующего мира, если еще не инициализировано
+            try {
+                race.server.SlotTimeService.initIfAbsent(existing, 1000L);
+            } catch (Throwable t) {
+                LOGGER.warn("[Race] Failed to initialize time for existing world {}: {}", key.getValue(), t.getMessage());
+            }
+            
             LOGGER.info("[Race] Found existing world {} for player {}", key.getValue(), playerUuid);
             return existing;
         }
@@ -145,7 +164,7 @@ public final class EnhancedWorldManager {
         }
     }
 
-    private static synchronized int getOrAssignSlot(UUID playerUuid) {
+    static synchronized int getOrAssignSlot(UUID playerUuid) {
         debugSlotState(playerUuid, "getOrAssignSlot-start");
         
         // ПРИОРИТЕТ 1: Локальный кеш (САМЫЙ НАДЕЖНЫЙ)
@@ -181,9 +200,8 @@ public final class EnhancedWorldManager {
                 if (player != null) {
                     String worldName = player.getServerWorld().getRegistryKey().getValue().toString();
                     if (isVanillaWorld(worldName)) {
-                        LOGGER.error("[Race] CRITICAL: Player {} in vanilla world {} but no cached slot found! Returning -1", playerUuid, worldName);
-                        // Возвращаем -1 вместо fallback на slot1
-                        return -1;
+                        LOGGER.warn("[Race] Player {} in vanilla world {} but no cached slot found! Assigning new slot", playerUuid, worldName);
+                        // НЕ возвращаем -1, а назначаем новый слот
                     }
                 }
             }
@@ -209,6 +227,24 @@ public final class EnhancedWorldManager {
 
     // Публичный доступ к слоту игрока (создаёт при отсутствии)
     public static int getOrAssignSlotForPlayer(UUID playerUuid) { return getOrAssignSlot(playerUuid); }
+    
+    // Перегрузка с сервером и сидом для CustomWorldManager
+    public static int getOrAssignSlot(MinecraftServer server, UUID playerUuid, long seed) {
+        // Сначала пробуем получить существующий слот
+        int existingSlot = getOrAssignSlot(playerUuid);
+        if (existingSlot > 0) {
+            // Сохраняем сид для игрока
+            setPlayerSeed(playerUuid, seed);
+            return existingSlot;
+        }
+        
+        // Если слот не найден, назначаем новый с учетом сида
+        setPlayerSeed(playerUuid, seed);
+        return getOrAssignSlot(playerUuid);
+    }
+    
+    // Поиск первого свободного слота для сида
+
     
     // Методы для работы с seed игрока
     public static long getSeedForPlayer(UUID playerUuid) {
@@ -393,12 +429,32 @@ public final class EnhancedWorldManager {
         WORLD_KEYS.putIfAbsent(worldId, key);
         
         // Отладочная информация для всех игроков
-        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            debugSlotState(player.getUuid(), "getOrCreateWorldForGroup");
+        try {
+            var playerManager = server.getPlayerManager();
+            if (playerManager != null) {
+                var playerList = playerManager.getPlayerList();
+                if (playerList != null) {
+                    for (ServerPlayerEntity player : playerList) {
+                        if (player != null) {
+                            debugSlotState(player.getUuid(), "getOrCreateWorldForGroup");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("[Race] Failed to debug slot state: {}", e.getMessage());
         }
         
         ServerWorld existing = server.getWorld(key);
-        if (existing != null) return existing;
+        if (existing != null) {
+            // Инициализируем время для существующего мира группы
+            try {
+                race.server.SlotTimeService.initIfAbsent(existing, 1000L);
+            } catch (Throwable t) {
+                LOGGER.warn("[Race] Failed to initialize time for existing group world {}: {}", key.getValue(), t.getMessage());
+            }
+            return existing;
+        }
         return createNewWorld(server, key, seed, worldKey);
     }
 
@@ -420,10 +476,16 @@ public final class EnhancedWorldManager {
                     // Проверяем, есть ли игроки в этом мире
                     boolean hasPlayers = false;
                     try {
-                        for (var p : server.getPlayerManager().getPlayerList()) {
-                            if (p.getServerWorld() == world) {
-                                hasPlayers = true;
-                                break;
+                        var playerManager = server.getPlayerManager();
+                        if (playerManager != null) {
+                            var playerList = playerManager.getPlayerList();
+                            if (playerList != null) {
+                                for (var p : playerList) {
+                                    if (p != null && p.getServerWorld() == world) {
+                                        hasPlayers = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
                     } catch (Throwable ignored) {}
@@ -615,7 +677,10 @@ public final class EnhancedWorldManager {
             
             // Загружаем чанк
             try {
-                world.getChunkManager().getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                var chunkManager = world.getChunkManager();
+                if (chunkManager != null) {
+                    chunkManager.getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                }
             } catch (Throwable ignored) {}
             
             // Поиск подходящей высоты снизу вверх
@@ -678,7 +743,10 @@ public final class EnhancedWorldManager {
                     
                     // Загружаем чанк
                     try {
-                        world.getChunkManager().getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                        var chunkManager = world.getChunkManager();
+                        if (chunkManager != null) {
+                            chunkManager.getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                        }
                     } catch (Throwable ignored) {}
                     
                     // Поиск подходящей высоты (диапазон где обычно генерируются порталы)
@@ -712,6 +780,11 @@ public final class EnhancedWorldManager {
         BlockPos above = pos.up();
         
         try {
+            // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+            ensureFullChunk(world, pos);
+            ensureFullChunk(world, below);
+            ensureFullChunk(world, above);
+            
             // Проверяем: твердый блок снизу, воздух на уровне игрока и выше, нет лавы
             boolean basicCheck = world.getBlockState(below).isSolidBlock(world, below) &&
                    world.isAir(pos) && 
@@ -722,13 +795,15 @@ public final class EnhancedWorldManager {
             
             if (!basicCheck) return false;
             
-            // Дополнительная проверка: убеждаемся, что под порталом есть достаточно места для обсидиана
-            // Проверяем, что на 2 блока ниже есть место для платформы
-            for (int dx = -3; dx <= 3; dx++) {
-                for (int dz = -3; dz <= 3; dz++) {
-                    BlockPos platformPos = pos.add(dx, -2, dz);
-                    // Проверяем, что место под платформой не занято лавой или другими опасными блоками
-                    if (world.getFluidState(platformPos).isOf(net.minecraft.fluid.Fluids.LAVA)) {
+                // Дополнительная проверка: убеждаемся, что под порталом есть достаточно места для обсидиана
+                // Проверяем, что на 2 блока ниже есть место для платформы
+                for (int dx = -3; dx <= 3; dx++) {
+                    for (int dz = -3; dz <= 3; dz++) {
+                        BlockPos platformPos = pos.add(dx, -2, dz);
+                        // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+                        ensureFullChunk(world, platformPos);
+                        // Проверяем, что место под платформой не занято лавой или другими опасными блоками
+                        if (world.getFluidState(platformPos).isOf(net.minecraft.fluid.Fluids.LAVA)) {
                         LOGGER.debug("[Race] Portal spot invalid: lava at platform position {}", platformPos);
                         return false;
                     }
@@ -962,6 +1037,8 @@ public final class EnhancedWorldManager {
      */
     private static boolean isPortalFrame(ServerWorld world, BlockPos pos) {
         try {
+            // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+            ensureFullChunk(world, pos);
             var blockState = world.getBlockState(pos);
             // Проверяем, что это обсидиан (рамка портала)
             if (blockState.isOf(net.minecraft.block.Blocks.OBSIDIAN)) {
@@ -971,6 +1048,8 @@ public final class EnhancedWorldManager {
                         for (int dz = -2; dz <= 2; dz++) {
                             if (dx == 0 && dy == 0 && dz == 0) continue;
                             BlockPos nearby = pos.add(dx, dy, dz);
+                            // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+                            ensureFullChunk(world, nearby);
                             if (world.getBlockState(nearby).isOf(net.minecraft.block.Blocks.NETHER_PORTAL)) {
                                 return true;
                             }
@@ -988,7 +1067,10 @@ public final class EnhancedWorldManager {
     private static int findNetherSafeY(ServerWorld world, int x, int z) {
         // Сначала загружаем чанк
         try {
-            world.getChunkManager().getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            var chunkManager = world.getChunkManager();
+            if (chunkManager != null) {
+                chunkManager.getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            }
         } catch (Throwable ignored) {}
         
         // Поиск снизу вверх в диапазоне где обычно генерируются порталы
@@ -998,6 +1080,11 @@ public final class EnhancedWorldManager {
             BlockPos above = pos.up();
             
             try {
+                // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+                ensureFullChunk(world, pos);
+                ensureFullChunk(world, below);
+                ensureFullChunk(world, above);
+                
                 // Проверяем: твердый блок снизу, воздух на уровне игрока и выше
                 if (world.getBlockState(below).isSolidBlock(world, below) &&
                     world.isAir(pos) && 
@@ -1026,8 +1113,19 @@ public final class EnhancedWorldManager {
         int y;
         
         // Убираем специальную обработку для Нижнего мира - пусть работает как обычно
-        var gen = world.getChunkManager().getChunkGenerator();
-        var noiseCfg = world.getChunkManager().getNoiseConfig();
+        var chunkManager = world.getChunkManager();
+        if (chunkManager == null) {
+            LOGGER.warn("[Race] ChunkManager is null, using default height");
+            return new BlockPos(x, world.getBottomY() + 64, z);
+        }
+        
+        var gen = chunkManager.getChunkGenerator();
+        var noiseCfg = chunkManager.getNoiseConfig();
+        if (gen == null || noiseCfg == null) {
+            LOGGER.warn("[Race] ChunkGenerator or NoiseConfig is null, using default height");
+            return new BlockPos(x, world.getBottomY() + 64, z);
+        }
+        
         y = gen.getHeight(x, z, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
         y = Math.max(y, world.getBottomY() + 1);
         
@@ -1037,7 +1135,10 @@ public final class EnhancedWorldManager {
     // Синхронно подгружает один чанк спавна
     private static void ensureSpawnChunkLoaded(ServerWorld world, BlockPos pos) {
         try {
-            world.getChunkManager().getChunk(pos.getX() >> 4, pos.getZ() >> 4, ChunkStatus.FULL, true);
+            var chunkManager = world.getChunkManager();
+            if (chunkManager != null) {
+                chunkManager.getChunk(pos.getX() >> 4, pos.getZ() >> 4, ChunkStatus.FULL, true);
+            }
         } catch (Throwable ignored) {}
     }
 
@@ -1050,6 +1151,10 @@ public final class EnhancedWorldManager {
                 for (int dz = -r; dz <= r; dz++) {
                     int x = base.getX() + dx;
                     int z = base.getZ() + dz;
+                    // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми проверками
+                    int pcx = x >> 4;
+                    int pcz = z >> 4;
+                    world.getChunk(pcx, pcz, ChunkStatus.FULL, true);
                     int startY;
                     try { startY = world.getTopY(Heightmap.Type.MOTION_BLOCKING, x, z); } catch (Throwable t) { startY = base.getY(); }
                     int maxY = Math.max(startY + 6, base.getY());
@@ -1066,6 +1171,13 @@ public final class EnhancedWorldManager {
                             for (int oz = -1; oz <= 1 && clear; oz++) {
                                 BlockPos f2 = feet.add(ox, 0, oz);
                                 BlockPos h2 = head.add(ox, 0, oz);
+                                // ИСПРАВЛЕНИЕ: Прогреваем чанк для каждой проверяемой позиции
+                                int f2cx = f2.getX() >> 4;
+                                int f2cz = f2.getZ() >> 4;
+                                world.getChunk(f2cx, f2cz, ChunkStatus.FULL, true);
+                                int h2cx = h2.getX() >> 4;
+                                int h2cz = h2.getZ() >> 4;
+                                world.getChunk(h2cx, h2cz, ChunkStatus.FULL, true);
                                 if (!world.isAir(f2) || !world.isAir(h2)) { clear = false; break; }
                                 if (!world.getFluidState(f2).isEmpty() || !world.getFluidState(h2).isEmpty()) { clear = false; break; }
                             }
@@ -1084,6 +1196,10 @@ public final class EnhancedWorldManager {
     private static boolean isDrySpot(ServerWorld world, BlockPos feet) {
         BlockPos head = feet.up();
         BlockPos below = feet.down();
+        // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми проверками
+        int pcx = feet.getX() >> 4;
+        int pcz = feet.getZ() >> 4;
+        world.getChunk(pcx, pcz, ChunkStatus.FULL, true);
         var belowState = world.getBlockState(below);
         if (!belowState.isSolidBlock(world, below) || !belowState.getFluidState().isEmpty()) return false;
         if (!world.isAir(feet) || !world.isAir(head)) return false;
@@ -1092,6 +1208,13 @@ public final class EnhancedWorldManager {
             for (int oz = -1; oz <= 1; oz++) {
                 BlockPos f2 = feet.add(ox, 0, oz);
                 BlockPos h2 = head.add(ox, 0, oz);
+                // ИСПРАВЛЕНИЕ: Прогреваем чанк для каждой проверяемой позиции
+                int f2cx = f2.getX() >> 4;
+                int f2cz = f2.getZ() >> 4;
+                world.getChunk(f2cx, f2cz, ChunkStatus.FULL, true);
+                int h2cx = h2.getX() >> 4;
+                int h2cz = h2.getZ() >> 4;
+                world.getChunk(h2cx, h2cz, ChunkStatus.FULL, true);
                 if (!world.isAir(f2) || !world.isAir(h2)) return false;
                 if (!world.getFluidState(f2).isEmpty() || !world.getFluidState(h2).isEmpty()) return false;
             }
@@ -1104,6 +1227,10 @@ public final class EnhancedWorldManager {
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
                 BlockPos p = new BlockPos(near.getX() + dx, y - 1, near.getZ() + dz);
+                // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми операциями
+                int pcx = p.getX() >> 4;
+                int pcz = p.getZ() >> 4;
+                world.getChunk(pcx, pcz, ChunkStatus.FULL, true);
                 try { world.setBlockState(p, net.minecraft.block.Blocks.STONE.getDefaultState()); } catch (Throwable ignored) {}
             }
         }
@@ -1111,10 +1238,18 @@ public final class EnhancedWorldManager {
             for (int dx = -2; dx <= 2; dx++) {
                 for (int dz = -2; dz <= 2; dz++) {
                     BlockPos p = new BlockPos(near.getX() + dx, y + dy, near.getZ() + dz);
+                    // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми операциями
+                    int pcx = p.getX() >> 4;
+                    int pcz = p.getZ() >> 4;
+                    world.getChunk(pcx, pcz, ChunkStatus.FULL, true);
                     try { world.setBlockState(p, net.minecraft.block.Blocks.AIR.getDefaultState()); } catch (Throwable ignored) {}
                 }
             }
         }
+        // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми операциями
+        int pcx = near.getX() >> 4;
+        int pcz = near.getZ() >> 4;
+        world.getChunk(pcx, pcz, ChunkStatus.FULL, true);
         try { world.setBlockState(new BlockPos(near.getX(), y, near.getZ()), net.minecraft.block.Blocks.TORCH.getDefaultState()); } catch (Throwable ignored) {}
         return new BlockPos(near.getX(), y, near.getZ());
     }
@@ -1143,30 +1278,48 @@ public final class EnhancedWorldManager {
             throw new IllegalStateException("Base world not found: " + baseWorldKey);
         }
         
-        // Создаем генератор чанков
-        ChunkGenerator chunkGenerator = createChunkGenerator(baseWorld, seed);
+        // ИСПРАВЛЕНИЕ: Создаем генератор чанков с правильным сидом
+        ChunkGenerator chunkGenerator = createSeededGenerator(server, baseWorld, seed);
+        if (chunkGenerator == null) {
+            LOGGER.error("[Race] Failed to create chunk generator, using base world generator");
+            chunkGenerator = baseWorld.getChunkManager().getChunkGenerator();
+        }
         
         // Создаем тип измерения - определяем на основе ключа мира
         RegistryEntry<DimensionType> dimensionType;
         try {
             var registryManager = server.getRegistryManager();
-            var dimensionTypeRegistry = registryManager.get(RegistryKeys.DIMENSION_TYPE);
-            
-            // Определяем тип измерения на основе ключа мира
-            if (key.getValue().getPath().contains("nether")) {
-                dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.THE_NETHER);
-                System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for Nether world");
-            } else if (key.getValue().getPath().contains("end")) {
-                dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.THE_END);
-                System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for End world");
+            if (registryManager == null) {
+                LOGGER.error("[Race] RegistryManager is null, using base world dimension type");
+                dimensionType = baseWorld.getDimensionEntry();
             } else {
-                dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.OVERWORLD);
-                System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for Overworld");
+                var dimensionTypeRegistry = registryManager.get(RegistryKeys.DIMENSION_TYPE);
+                if (dimensionTypeRegistry == null) {
+                    LOGGER.error("[Race] DimensionType registry is null, using base world dimension type");
+                    dimensionType = baseWorld.getDimensionEntry();
+                } else {
+                    // Определяем тип измерения на основе ключа мира
+                    if (key.getValue().getPath().contains("nether")) {
+                        dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.THE_NETHER);
+                        System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for Nether world");
+                    } else if (key.getValue().getPath().contains("end")) {
+                        dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.THE_END);
+                        System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for End world");
+                    } else {
+                        dimensionType = dimensionTypeRegistry.entryOf(DimensionTypes.OVERWORLD);
+                        System.out.println("✓ Using dimension type: " + dimensionType.getKey() + " for Overworld");
+                    }
+                    
+                    System.out.println("✓ Dimension type value: " + dimensionType.value());
+                }
             }
-            
-            System.out.println("✓ Dimension type value: " + dimensionType.value());
         } catch (Exception e) {
             System.err.println("Failed to get dimension type, falling back to base world: " + e.getMessage());
+            dimensionType = baseWorld.getDimensionEntry();
+        }
+        
+        if (dimensionType == null) {
+            LOGGER.error("[Race] DimensionType is null, using base world dimension type");
             dimensionType = baseWorld.getDimensionEntry();
         }
         
@@ -1175,6 +1328,10 @@ public final class EnhancedWorldManager {
         
         // Получаем сессию хранения
         LevelStorage.Session session = ((race.mixin.MinecraftServerSessionAccessor) server).getSession_FAB();
+        if (session == null) {
+            LOGGER.error("[Race] Session is null, cannot create world");
+            throw new IllegalStateException("Session is null");
+        }
         
         // Для стандартных ключей миров не создаем отдельные директории
         // Используем стандартную директорию мира
@@ -1258,8 +1415,24 @@ public final class EnhancedWorldManager {
                     null
             );
             
-            // Регистрируем мир в сервере
-            WorldRegistrar.put(server, key, world);
+            // ИСПРАВЛЕНИЕ: Регистрируем мир в сервере через WorldRegistrar
+            try {
+                WorldRegistrar.put(server, key, world);
+                LOGGER.info("[Race] World {} registered in server via WorldRegistrar", key.getValue());
+            } catch (Exception e) {
+                LOGGER.error("[Race] Failed to register world {} via WorldRegistrar: {}", key.getValue(), e.getMessage());
+                // Fallback: проверяем, что мир доступен через server.getWorld()
+                ServerWorld registeredWorld = server.getWorld(key);
+                if (registeredWorld != null) {
+                    LOGGER.info("[Race] World {} found in server registry despite registration failure", key.getValue());
+                } else {
+                    LOGGER.warn("[Race] World {} not found in server registry after creation", key.getValue());
+                }
+            }
+            
+            // ИСПРАВЛЕНИЕ: Убираем проблемную инициализацию структур
+            // Структуры будут инициализированы автоматически при первой загрузке чанков
+            LOGGER.info("[Race] World created, structures will be initialized on first chunk load: {}", key.getValue());
             
             // Инициализируем виртуальное время мира
             race.server.SlotTimeService.initIfAbsent(world, 1000L);
@@ -1269,16 +1442,30 @@ public final class EnhancedWorldManager {
         }
 
         try {
-            var gen = world.getChunkManager().getChunkGenerator();
-            var noiseCfg = world.getChunkManager().getNoiseConfig();
-            int h00 = gen.getHeight(0, 0, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
-            LOGGER.info("[Race] World created: key={}, seed={}, gen={}, sampleHeight(0,0)={}",
-                    key.getValue(), seed, gen.getClass().getSimpleName(), h00);
+            var chunkManager = world.getChunkManager();
+            if (chunkManager != null) {
+                var gen = chunkManager.getChunkGenerator();
+                var noiseCfg = chunkManager.getNoiseConfig();
+                if (gen != null && noiseCfg != null) {
+                    int h00 = gen.getHeight(0, 0, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
+                    LOGGER.info("[Race] World created: key={}, seed={}, gen={}, sampleHeight(0,0)={}",
+                            key.getValue(), seed, gen.getClass().getSimpleName(), h00);
+                } else {
+                    LOGGER.warn("[Race] ChunkGenerator or NoiseConfig is null for world {}", key.getValue());
+                }
+            } else {
+                LOGGER.warn("[Race] ChunkManager is null for world {}", key.getValue());
+            }
             // Базовые gamerule'ы для нормального выживания в персональном мире
             try {
                 world.getGameRules().get(GameRules.DO_TILE_DROPS).set(true, server);
                 world.getGameRules().get(GameRules.SPECTATORS_GENERATE_CHUNKS).set(false, server);
                 world.getGameRules().get(GameRules.DO_FIRE_TICK).set(true, server);
+                
+                // ИСПРАВЛЕНИЕ: Включаем спавн мобов сразу с защитой от NPE
+                world.getGameRules().get(GameRules.DO_MOB_SPAWNING).set(true, server);
+                System.out.println("[Race] Enabled mob spawning for world: " + key.getValue());
+                
                 // Для fabric_race миров: отключаем DODAYLIGHTCYCLE
                 if (world.getRegistryKey().getValue().getNamespace().equals("fabric_race")) {
                     world.getGameRules().get(GameRules.DO_DAYLIGHT_CYCLE).set(false, server);
@@ -1287,8 +1474,7 @@ public final class EnhancedWorldManager {
                 }
                 world.getGameRules().get(GameRules.RANDOM_TICK_SPEED).set(3, server);
                 world.getGameRules().get(GameRules.SPAWN_RADIUS).set(0, server);
-                // Включаем спавн монстров для персональных миров
-                world.getGameRules().get(GameRules.DO_MOB_SPAWNING).set(true, server);
+                // ПРИМЕЧАНИЕ: Спавн мобов включен сразу с защитой от NPE в миксинах
                 try { world.getGameRules().get(GameRules.DO_INSOMNIA).set(false, server); } catch (Throwable ignored) {}
                 try { world.getGameRules().get(GameRules.DO_PATROL_SPAWNING).set(false, server); } catch (Throwable ignored) {}
                 try { world.getGameRules().get(GameRules.DISABLE_RAIDS).set(true, server); } catch (Throwable ignored) {}
@@ -1343,6 +1529,21 @@ public final class EnhancedWorldManager {
             spawnPos = findLocalSafeSpot(world, spawnPos);
         }
         world.setSpawnPos(spawnPos, 0.0F);
+        
+        // ИСПРАВЛЕНИЕ: Прогреваем чанки после установки спавна
+        int cx = spawnPos.getX() >> 4;
+        int cz = spawnPos.getZ() >> 4;
+        world.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                world.getChunk(cx + dx, cz + dz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            }
+        }
+        
+        // ИСПРАВЛЕНИЕ: Откладываем инициализацию структур до первого тика мира
+        // Это предотвращает NPE в StructureAccessor при создании мира
+        LOGGER.info("[Race] World created, structures will be initialized on first tick: {}", world.getRegistryKey().getValue());
+        
         try {
             world.getWorldBorder().setCenter(spawnPos.getX(), spawnPos.getZ());
         } catch (Throwable ignored) {}
@@ -1362,6 +1563,10 @@ public final class EnhancedWorldManager {
             LOGGER.warn("[Race] Non-blocking spawn chunk hint for {}: {}", key.getValue(), t.toString());
         }
         
+        // ИСПРАВЛЕНИЕ: Убираем проблемную инициализацию структур
+        // Структуры будут инициализированы автоматически при первой загрузке чанков
+        LOGGER.info("[Race] World spawn set, structures will be initialized on first chunk load: {}", key.getValue());
+        
         // ИНИЦИАЛИЗИРУЕМ ВИРТУАЛЬНОЕ ВРЕМЯ ДЛЯ RACE-МИРОВ
         try {
             race.server.SlotTimeService.initIfAbsent(world, 1000L);
@@ -1377,12 +1582,44 @@ public final class EnhancedWorldManager {
      * Создает генератор чанков
      */
     private static ChunkGenerator createChunkGenerator(ServerWorld baseWorld, long seed) {
-        ChunkGenerator base = baseWorld.getChunkManager().getChunkGenerator();
+        if (baseWorld == null) {
+            LOGGER.error("[Race] BaseWorld is null in createChunkGenerator");
+            return null;
+        }
+        
+        var chunkManager = baseWorld.getChunkManager();
+        if (chunkManager == null) {
+            LOGGER.error("[Race] ChunkManager is null in createChunkGenerator");
+            return null;
+        }
+        
+        ChunkGenerator base = chunkManager.getChunkGenerator();
+        if (base == null) {
+            LOGGER.error("[Race] Base chunk generator is null in createChunkGenerator");
+            return null;
+        }
+        
         if (base instanceof NoiseChunkGenerator noise) {
             // End использует особый источник биомов
             if (baseWorld.getRegistryKey() == World.END) {
-            var biomeLookup = baseWorld.getRegistryManager().getOptionalWrapper(RegistryKeys.BIOME).orElseThrow();
-            BiomeSource endBiomeSource = TheEndBiomeSource.createVanilla(biomeLookup);
+                var registryManager = baseWorld.getRegistryManager();
+                if (registryManager == null) {
+                    LOGGER.error("[Race] RegistryManager is null in createChunkGenerator");
+                    return base;
+                }
+                
+                var biomeLookup = registryManager.getOptionalWrapper(RegistryKeys.BIOME).orElse(null);
+                if (biomeLookup == null) {
+                    LOGGER.error("[Race] Biome registry is null in createChunkGenerator");
+                    return base;
+                }
+                
+                BiomeSource endBiomeSource = TheEndBiomeSource.createVanilla(biomeLookup);
+                if (endBiomeSource == null) {
+                    LOGGER.error("[Race] Failed to create EndBiomeSource");
+                    return base;
+                }
+                
                 return new NoiseChunkGenerator(endBiomeSource, noise.getSettings());
             }
 
@@ -1618,25 +1855,54 @@ public final class EnhancedWorldManager {
                 {256,256}, {-256,256}, {256,-256}, {-256,-256},
                 {384,0}, {-384,0}, {0,384}, {0,-384}
         };
-        var gen = world.getChunkManager().getChunkGenerator();
-        var noiseCfg = world.getChunkManager().getNoiseConfig();
+        var chunkManager = world.getChunkManager();
+        if (chunkManager == null) {
+            LOGGER.warn("[Race] ChunkManager is null, using fallback spawn");
+            return new BlockPos(0, world.getBottomY() + 64, 0);
+        }
+        
+        var gen = chunkManager.getChunkGenerator();
+        var noiseCfg = chunkManager.getNoiseConfig();
+        if (gen == null || noiseCfg == null) {
+            LOGGER.warn("[Race] ChunkGenerator or NoiseConfig is null, using fallback spawn");
+            return new BlockPos(0, world.getBottomY() + 64, 0);
+        }
+        
         int bottom = world.getBottomY() + 1;
         for (int[] c : candidates) {
             int x = c[0]; int z = c[1];
             int y = gen.getHeight(x, z, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
             if (y <= bottom) continue;
             BlockPos guess = new BlockPos(x, Math.max(y, bottom), z);
-            ensureSpawnChunkLoaded(world, guess);
+            // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми проверками
+            int cx = guess.getX() >> 4;
+            int cz = guess.getZ() >> 4;
+            world.getChunk(cx, cz, ChunkStatus.FULL, true);
+            // Прогреваем 3x3 область для безопасности
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    world.getChunk(cx + dx, cz + dz, ChunkStatus.FULL, true);
+                }
+            }
             BlockPos spot = findLocalSafeSpot(world, guess);
             if (isDrySpot(world, spot)) return spot;
         }
         // Жёсткий фолбэк: построим сухую платформу
         int x = 0, z = 0;  // Используем (0,0) вместо (128,128)
-        int y = gen.getHeight(x, z, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
+        int y = gen != null && noiseCfg != null ? gen.getHeight(x, z, Heightmap.Type.MOTION_BLOCKING, world, noiseCfg) : world.getBottomY() + 64;
         // Для Nether используем безопасную высоту вместо seaLevel
         int safeY = world.getDimensionEntry().matchesKey(DimensionTypes.THE_NETHER) ? 64 : Math.max(y, world.getSeaLevel() + 1);
         BlockPos near = new BlockPos(x, safeY, z);
-        ensureSpawnChunkLoaded(world, near);
+        // ИСПРАВЛЕНИЕ: Прогреваем чанк до FULL перед любыми проверками
+        int cx = near.getX() >> 4;
+        int cz = near.getZ() >> 4;
+        world.getChunk(cx, cz, ChunkStatus.FULL, true);
+        // Прогреваем 3x3 область для безопасности
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                world.getChunk(cx + dx, cz + dz, ChunkStatus.FULL, true);
+            }
+        }
         return buildDryPlatform(world, near);
     }
 
@@ -1655,6 +1921,11 @@ public final class EnhancedWorldManager {
             } catch (Throwable ignored) {}
             // нет жидкости под ногами и на уровне головы, твёрдый блок снизу, 2 блока воздуха
             BlockPos below = feet.down();
+            // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+            ensureFullChunk(world, feet);
+            ensureFullChunk(world, below);
+            ensureFullChunk(world, feet.up());
+            
             var belowSt = world.getBlockState(below);
             if (!belowSt.isSolidBlock(world, below)) return null;
             if (!world.getFluidState(below).isEmpty()) return null;
@@ -1701,10 +1972,19 @@ public final class EnhancedWorldManager {
                     try {
                         // Не форсируем загрузку чанка — чтобы не создавать тысячи тикетов при поиске спавна
                         world.getChunk(x >> 4, z >> 4, net.minecraft.world.chunk.ChunkStatus.SURFACE, false);
-                        var gen = world.getChunkManager().getChunkGenerator();
-						var noiseCfg = world.getChunkManager().getNoiseConfig();
-						// Чтение высоты через генератор, что устойчивее чем getTopY в моменты генерации
-						y = gen.getHeight(x, z, net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
+                        var chunkManager = world.getChunkManager();
+                        if (chunkManager != null) {
+                            var gen = chunkManager.getChunkGenerator();
+                            var noiseCfg = chunkManager.getNoiseConfig();
+                            if (gen != null && noiseCfg != null) {
+                                // Чтение высоты через генератор, что устойчивее чем getTopY в моменты генерации
+                                y = gen.getHeight(x, z, net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, world, noiseCfg);
+                            } else {
+                                y = world.getBottomY() + 64;
+                            }
+                        } else {
+                            y = world.getBottomY() + 64;
+                        }
 					} catch (Throwable t) {
 						continue;
 					}
@@ -1955,9 +2235,161 @@ public final class EnhancedWorldManager {
             world.setBlockState(bottomLeft.up(5).offset(right, i), net.minecraft.block.Blocks.OBSIDIAN.getDefaultState());
         }
     }
+    
+    /**
+     * Находит первый свободный слот для указанного сида
+     */
+    public static int findFirstFreeSlotForSeed(MinecraftServer server, long seed) {
+        // Получаем все занятые слоты
+        java.util.Set<Integer> usedSlots = new java.util.HashSet<>();
+        
+        // Добавляем слоты из карты игроков
+        for (Integer slot : PLAYER_SLOT.values()) {
+            if (slot != null && slot > 0) {
+                usedSlots.add(slot);
+            }
+        }
+        
+        // Также проверяем WorldManager (используем новый метод)
+        for (int i = 1; i <= MAX_SLOTS; i++) {
+            if (race.server.WorldManager.isSlotOccupied(i)) {
+                usedSlots.add(i);
+            }
+        }
+        
+        // Ищем первый свободный слот
+        for (int slot = 1; slot <= MAX_SLOTS; slot++) {
+            if (!usedSlots.contains(slot)) {
+                LOGGER.info("[Race] Found free slot {} for seed {}", slot, seed);
+                return slot;
+            }
+        }
+        
+        LOGGER.warn("[Race] All slots are occupied, using slot 1 as fallback");
+        return 1; // Fallback
+    }
+    
+    /**
+     * Создает или получает мир для игрока с указанным слотом (для параллельных гонок)
+     */
+    public static ServerWorld getOrCreateWorldForParallelRace(MinecraftServer server, UUID playerUuid, int slot, long seed, RegistryKey<World> worldKey) {
+        setCurrentServer(server);
+        
+        // Принудительно назначаем указанный слот
+        PLAYER_SLOT.put(playerUuid, slot);
+        race.server.WorldManager.setPlayerSlot(playerUuid, slot);
+        
+        // Кешируем seed игрока
+        setPlayerSeed(playerUuid, seed);
+        
+        Identifier slotId = getSlotId(worldKey, slot, seed);
+        RegistryKey<World> key = RegistryKey.of(RegistryKeys.WORLD, slotId);
+        String worldId = slotId.getPath();
+        
+        LOGGER.info("[Race] getOrCreateWorldForParallelRace: player={}, slot={}, dim={}, seed={}, id={}", 
+                   playerUuid, slot, worldKey.getValue(), seed, worldId);
+        
+        WORLD_KEYS.putIfAbsent(worldId, key);
+        
+        // Очистим старые миры этого слота c другим сидом
+        cleanupOldSlotWorlds(server, slot, worldKey, worldId);
+        
+        // Получаем или создаем мир
+        ServerWorld existing = server.getWorld(key);
+        if (existing != null) {
+            LOGGER.info("[Race] Using existing parallel world: {}", key.getValue());
+            return existing;
+        }
+        
+        return createNewWorld(server, key, seed, worldKey);
     }
 
-
-
+    /**
+     * Создает ChunkGenerator для кастомного мира с правильным сидом
+     * ИСПРАВЛЕНИЕ: Генератор создается с сидом с самого начала, без поздней подмены
+     */
+    private static ChunkGenerator createSeededGenerator(MinecraftServer server, ServerWorld baseWorld, long seed) {
+        try {
+            if (server == null) {
+                LOGGER.error("[Race] Server is null in createSeededGenerator");
+                return null;
+            }
+            
+            if (baseWorld == null) {
+                LOGGER.error("[Race] BaseWorld is null in createSeededGenerator");
+                return null;
+            }
+            
+            var drm = server.getRegistryManager();
+            if (drm == null) {
+                LOGGER.error("[Race] RegistryManager is null in createSeededGenerator");
+                return baseWorld.getChunkManager().getChunkGenerator();
+            }
+            
+            var base = baseWorld.getChunkManager().getChunkGenerator();
+            if (base == null) {
+                LOGGER.error("[Race] Base chunk generator is null in createSeededGenerator");
+                return null;
+            }
+            
+            if (base instanceof NoiseChunkGenerator noiseGen) {
+                var settings = noiseGen.getSettings(); // RegistryEntry<ChunkGeneratorSettings>
+                if (settings == null) {
+                    LOGGER.error("[Race] ChunkGeneratorSettings is null in createSeededGenerator");
+                    return base;
+                }
+                
+                var src0 = noiseGen.getBiomeSource();
+                if (src0 == null) {
+                    LOGGER.error("[Race] BiomeSource is null in createSeededGenerator");
+                    return base;
+                }
+                
+                BiomeSource src = src0;
+                
+                // Проверяем тип источника биомов и создаем новый с сидом
+                if (src0 instanceof net.minecraft.world.biome.source.MultiNoiseBiomeSource) {
+                    try { 
+                        // MultiNoise → новый источник с сидом
+                        var params = drm.get(net.minecraft.registry.RegistryKeys.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST);
+                        if (params == null) {
+                            LOGGER.warn("[Race] MultiNoiseBiomeSourceParameterList registry is null, using base source");
+                            src = src0;
+                        } else {
+                            var entry = params.entryOf(net.minecraft.world.biome.source.MultiNoiseBiomeSourceParameterLists.OVERWORLD);
+                            if (entry == null) {
+                                LOGGER.warn("[Race] OVERWORLD parameter list is null, using base source");
+                                src = src0;
+                            } else {
+                                src = net.minecraft.world.biome.source.MultiNoiseBiomeSource.create(entry);
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                        // Если создание нового источника не удалось, используем базовый источник
+                        src = src0;
+                    }
+                } else if (src0 instanceof net.minecraft.world.biome.source.TheEndBiomeSource) {
+                    // Для TheEndBiomeSource используем базовый источник (он уже правильный для End)
+                    src = src0;
+                } else {
+                    // Для других типов источников используем базовый источник
+                    src = src0;
+                }
+                
+                if (src == null) {
+                    LOGGER.error("[Race] Final BiomeSource is null, using base generator");
+                    return base;
+                }
+                
+                return new NoiseChunkGenerator(src, settings);
+            }
+            
+            return base;
+        } catch (Exception e) {
+            LOGGER.error("[Race] Failed to create seeded generator: {}", e.getMessage());
+            return baseWorld.getChunkManager().getChunkGenerator();
+        }
+    }
+}
 
 

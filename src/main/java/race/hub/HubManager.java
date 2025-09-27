@@ -353,11 +353,15 @@ public class HubManager {
      * Устанавливает выбор сида игрока
      */
     public static void setPlayerSeedChoice(UUID playerId, long seed) {
-        // СТРОГАЯ ПРОВЕРКА: Блокируем любые повторные вызовы с тем же сидом
+        // ИСПРАВЛЕНИЕ: Разрешаем смену сида, но логируем
         Long existingSeed = playerSeedChoices.get(playerId);
         if (existingSeed != null && existingSeed.equals(seed)) {
-            LOGGER.info("[Race] Player {} already has seed {} - BLOCKING repeated call", playerId, seed);
-            return; // Полная блокировка повторных вызовов
+            LOGGER.info("[Race] Player {} already has seed {} - allowing seed change", playerId, seed);
+            // НЕ блокируем - позволяем смену сида
+        } else if (existingSeed != null && !existingSeed.equals(seed)) {
+            // Очищаем старый сид из счетчика
+            seedPlayerCount.put(existingSeed, Math.max(0, seedPlayerCount.getOrDefault(existingSeed, 0) - 1));
+            LOGGER.info("[Race] Player {} changed seed from {} to {}", playerId, existingSeed, seed);
         }
         
         // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Игрок уже в гонке
@@ -438,6 +442,20 @@ public class HubManager {
      */
     public static long getPlayerSeedChoice(UUID playerId) {
         return playerSeedChoices.getOrDefault(playerId, -1L);
+    }
+    
+    /**
+     * Очищает выбор сида игрока
+     */
+    public static void clearPlayerSeedChoice(UUID playerId) {
+        Long existingSeed = playerSeedChoices.get(playerId);
+        if (existingSeed != null) {
+            // Уменьшаем счетчик для старого сида
+            seedPlayerCount.put(existingSeed, Math.max(0, seedPlayerCount.getOrDefault(existingSeed, 0) - 1));
+            // Удаляем выбор игрока
+            playerSeedChoices.remove(playerId);
+            LOGGER.info("[Race] Cleared seed choice for player: {} (was seed: {})", playerId, existingSeed);
+        }
     }
     
     /**
@@ -644,18 +662,34 @@ public class HubManager {
         for (UUID playerId : playerIds) {
             ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerId);
             if (player != null) {
-                // Создаем/получаем персональный мир для игрока (серверный тред)
-                var dst = race.server.world.EnhancedWorldManager.getOrCreateWorld(server, playerId, seed, net.minecraft.world.World.OVERWORLD);
-                race.server.world.EnhancedWorldManager.teleportToWorld(player, dst);
-                LOGGER.info("[Race] Player {} moved to personal world with seed {}", player.getGameProfile().getName(), seed);
-                // Регистрируем игрока в системе прогресса/активности
-                try { race.hub.ProgressSyncManager.registerPlayer(player, seed); } catch (Throwable ignored) {}
-                // Замораживаем до личного старта таймера
                 try {
-                    race.server.RaceServerInit.class.getDeclaredField("frozenUntilStart");
-                    race.server.RaceServerInit.class.getDeclaredField("freezePos");
-                } catch (NoSuchFieldException e) {}
-                race.server.RaceServerInit.freezePlayerUntilStart(player);
+                    // Создаем мир для игрока напрямую
+                    ServerWorld dst = race.server.world.EnhancedWorldManager.getOrCreateWorldForGroup(
+                        server, 
+                        race.server.world.EnhancedWorldManager.findFirstFreeSlotForSeed(server, seed), 
+                        seed, 
+                        net.minecraft.world.World.OVERWORLD
+                    );
+                    
+                    if (dst != null) {
+                        race.server.world.EnhancedWorldManager.teleportToWorld(player, dst);
+                        LOGGER.info("[Race] Player {} moved to personal world with seed {}", player.getGameProfile().getName(), seed);
+                        
+                        // Регистрируем игрока в системе прогресса/активности
+                        try { race.hub.ProgressSyncManager.registerPlayer(player, seed); } catch (Throwable ignored) {}
+                        
+                        // Замораживаем до личного старта таймера
+                        try {
+                            race.server.RaceServerInit.class.getDeclaredField("frozenUntilStart");
+                            race.server.RaceServerInit.class.getDeclaredField("freezePos");
+                        } catch (NoSuchFieldException e) {}
+                        race.server.RaceServerInit.freezePlayerUntilStart(player);
+                    } else {
+                        LOGGER.error("[Race] Failed to create world for player {}", player.getGameProfile().getName());
+                    }
+                } catch (Throwable t) {
+                    LOGGER.error("[Race] Error setting up player {}: {}", player.getGameProfile().getName(), t.getMessage());
+                }
             }
         }
         

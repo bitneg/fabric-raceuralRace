@@ -52,11 +52,23 @@ public final class PortalHelper {
         double bestD2 = Double.MAX_VALUE;
         for (int x = a.getX() - rxz; x <= a.getX() + rxz; x++) {
             for (int z = a.getZ() - rxz; z <= a.getZ() + rxz; z++) {
+                // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+                try {
+                    int cx = x >> 4, cz = z >> 4;
+                    w.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                } catch (Throwable t) {
+                    // Игнорируем ошибки загрузки чанков
+                }
+                
                 for (int y = a.getY() - ry; y <= a.getY() + ry; y++) {
                     BlockPos p = new BlockPos(x, y, z);
-                    if (w.getBlockState(p).isOf(Blocks.NETHER_PORTAL)) {
-                        double d2 = p.getSquaredDistance(a);
-                        if (d2 < bestD2) { bestD2 = d2; best = p; }
+                    try {
+                        if (w.getBlockState(p).isOf(Blocks.NETHER_PORTAL)) {
+                            double d2 = p.getSquaredDistance(a);
+                            if (d2 < bestD2) { bestD2 = d2; best = p; }
+                        }
+                    } catch (Throwable t) {
+                        // Игнорируем ошибки чтения блоков
                     }
                 }
             }
@@ -65,20 +77,46 @@ public final class PortalHelper {
     }
 
     private static BlockPos findSafeGround(ServerWorld w, BlockPos around) {
+        // ИСПРАВЛЕНИЕ: Прогреваем чанк перед поиском
+        try {
+            int cx = around.getX() >> 4, cz = around.getZ() >> 4;
+            w.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+        } catch (Throwable t) {
+            // Игнорируем ошибки загрузки чанков
+        }
+        
         for (int dy = 0; dy < 48; dy++) {
             BlockPos p = around.down(dy);
-            if (w.getBlockState(p).isSolidBlock(w, p) && w.isAir(p.up()) && w.isAir(p.up(2))) return p.up();
+            try {
+                if (w.getBlockState(p).isSolidBlock(w, p) && w.isAir(p.up()) && w.isAir(p.up(2))) return p.up();
+            } catch (Throwable t) {
+                // Игнорируем ошибки чтения блоков
+            }
         }
         return around;
     }
 
     private static boolean hasSpaceForFrame(ServerWorld w, BlockPos c, Direction.Axis axis) {
         Direction right = axis == Direction.Axis.X ? Direction.EAST : Direction.SOUTH;
+        
+        // ИСПРАВЛЕНИЕ: Прогреваем чанк перед проверкой блоков
+        try {
+            int cx = c.getX() >> 4, cz = c.getZ() >> 4;
+            w.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+        } catch (Throwable t) {
+            // Игнорируем ошибки загрузки чанков
+        }
+        
         // окно 4×5 с проёмом 2×3
         for (int i = 0; i < 4; i++) {
             for (int y = 1; y <= 4; y++) {
                 BlockPos p = c.down().offset(right, i).up(y);
-                if (!w.getBlockState(p).isReplaceable()) return false;
+                try {
+                    if (!w.getBlockState(p).isReplaceable()) return false;
+                } catch (Throwable t) {
+                    // Игнорируем ошибки чтения блоков
+                    return false;
+                }
             }
         }
         return true;
@@ -88,9 +126,19 @@ public final class PortalHelper {
         Direction right = axis == Direction.Axis.X ? Direction.EAST : Direction.SOUTH;
         BlockPos bottomLeft = center.down();
 
-        for (int i = 0; i < 4; i++) w.setBlockState(bottomLeft.offset(right, i), Blocks.OBSIDIAN.getDefaultState());
+        // ИСПРАВЛЕНИЕ: Создаем нижние блоки обсидиана под порталом
+        for (int i = 0; i < 4; i++) {
+            // Нижний ряд (под порталом)
+            w.setBlockState(bottomLeft.offset(right, i).down(), Blocks.OBSIDIAN.getDefaultState());
+            // Основной ряд (рамка портала)
+            w.setBlockState(bottomLeft.offset(right, i), Blocks.OBSIDIAN.getDefaultState());
+        }
+        
+        // Боковые стойки
         for (int y = 1; y <= 4; y++) w.setBlockState(bottomLeft.up(y), Blocks.OBSIDIAN.getDefaultState());
         for (int y = 1; y <= 4; y++) w.setBlockState(bottomLeft.offset(right, 3).up(y), Blocks.OBSIDIAN.getDefaultState());
+        
+        // Верхний ряд
         for (int i = 0; i < 4; i++) w.setBlockState(bottomLeft.up(5).offset(right, i), Blocks.OBSIDIAN.getDefaultState());
     }
 

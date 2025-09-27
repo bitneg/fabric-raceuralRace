@@ -14,13 +14,13 @@ import race.server.phase.PhaseState;
 import race.server.phase.RacePhaseManager;
 import race.server.world.EnhancedWorldManager;
 import race.server.world.ServerRaceConfig;
-import race.ranking.RankingSystem;
-import race.replay.ReplayManager;
 import race.hub.HubManager;
 import race.hub.WorldManager;
 import race.hub.ProgressSyncManager;
 
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static net.minecraft.server.command.CommandManager.*;
 
@@ -28,6 +28,7 @@ import static net.minecraft.server.command.CommandManager.*;
  * Команды для управления гонкой
  */
 public final class RaceCommands {
+    private static final Logger LOGGER = LoggerFactory.getLogger(RaceCommands.class);
     
     public static void register() {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
@@ -39,6 +40,7 @@ public final class RaceCommands {
                     .then(literal("all").executes(RaceCommands::returnAllToLobby))
                     .executes(RaceCommands::returnToLobby))
                 .then(literal("status").executes(RaceCommands::showStatus))
+                .then(literal("lobbylist").executes(RaceCommands::showLobbyList))
                 
                 // Настройка
                 .then(literal("setup")
@@ -57,6 +59,9 @@ public final class RaceCommands {
                 .then(literal("join")
                     .then(argument("player", StringArgumentType.string())
                         .executes(ctx -> delayedJoin(ctx, StringArgumentType.getString(ctx, "player")))))
+                .then(literal("parallel")
+                    .then(argument("player", StringArgumentType.string())
+                        .executes(ctx -> parallelRace(ctx, StringArgumentType.getString(ctx, "player")))))
                 .then(literal("cancel").executes(RaceCommands::cancelJoin))
                 .then(literal("reset").executes(RaceCommands::resetSeed))
                 .then(literal("clear").executes(RaceCommands::clearReturnPoint))
@@ -73,8 +78,6 @@ public final class RaceCommands {
                 
                 // Информация
                 .then(literal("leaderboard").executes(RaceCommands::showLeaderboard))
-                .then(literal("replays").executes(RaceCommands::showReplays))
-                .then(literal("ranking").executes(RaceCommands::showRanking))
                 .then(literal("help").executes(RaceCommands::showHelp))
                 .then(literal("debug-return").executes(RaceCommands::debugReturnPoint))
                 .then(literal("clear-return").executes(RaceCommands::clearReturnPoint))
@@ -95,7 +98,12 @@ public final class RaceCommands {
                 .then(literal("ghosts")
                     .then(literal("on").executes(ctx -> toggleGhosts(ctx, true)))
                     .then(literal("off").executes(ctx -> toggleGhosts(ctx, false)))
+                    .then(literal("force").executes(RaceCommands::forceEnableGhosts))
+                    .then(literal("status").executes(RaceCommands::showGhostStatus))
+                    .then(literal("test").executes(RaceCommands::testGhostTrail))
                 )
+                .then(literal("unfreeze").executes(RaceCommands::unfreezePlayer))
+                .then(literal("unfreeze-all").executes(RaceCommands::unfreezeAllPlayers))
                 .then(literal("tps")
                     .then(literal("on").executes(ctx -> toggleTpsDisplay(ctx, true)))
                     .then(literal("off").executes(ctx -> toggleTpsDisplay(ctx, false)))
@@ -426,6 +434,13 @@ public final class RaceCommands {
             return 0;
         }
         
+        // ПРОВЕРКА: Целевой игрок должен быть в кастомном мире
+        String targetWorld = target.getServerWorld().getRegistryKey().getValue().toString();
+        if (!targetWorld.startsWith("fabric_race:")) {
+            source.sendFeedback(() -> Text.literal("Целевой игрок должен быть в кастомном мире!").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
         // ИСПРАВЛЕНИЕ: ПРИНУДИТЕЛЬНО сохраняем текущую позицию
         try {
             race.server.world.ReturnPointRegistry.forceSetReturnPoint(player);
@@ -433,10 +448,43 @@ public final class RaceCommands {
             String currentWorld = player.getServerWorld().getRegistryKey().getValue().toString();
             source.sendFeedback(() -> Text.literal("Сохранена точка возврата: " + currentWorld).formatted(net.minecraft.util.Formatting.GRAY), false);
             
+            // Принудительно загружаем чанк перед телепортацией
+            try {
+                var world = target.getServerWorld();
+                var chunkPos = new net.minecraft.util.math.ChunkPos(
+                    (int) Math.floor(target.getX()) >> 4,
+                    (int) Math.floor(target.getZ()) >> 4
+                );
+                
+                // Загружаем чанк с полной генерацией
+                world.getChunk(chunkPos.x, chunkPos.z, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                
+                // Дополнительно загружаем соседние чанки для стабильности
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        world.getChunk(chunkPos.x + dx, chunkPos.z + dz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+                    }
+                }
+            } catch (Exception e) {
+                source.sendFeedback(() -> Text.literal("Предупреждение: не удалось предзагрузить чанки").formatted(net.minecraft.util.Formatting.YELLOW), false);
+            }
+            
         } catch (Exception e) {
             source.sendFeedback(() -> Text.literal("Ошибка сохранения точки возврата: " + e.getMessage()).formatted(net.minecraft.util.Formatting.RED), false);
         }
 
+        // ИСПРАВЛЕНИЕ: Принудительно загружаем чанк перед телепортацией
+        try {
+            var world = target.getServerWorld();
+            var pos = target.getBlockPos();
+            var chunk = world.getChunk(pos.getX() >> 4, pos.getZ() >> 4, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            if (chunk != null) {
+                LOGGER.info("[Race] Chunk loaded successfully for teleportation");
+            }
+        } catch (Exception e) {
+            LOGGER.warn("[Race] Failed to preload chunk for teleportation: {}", e.getMessage());
+        }
+        
         // Телепортируем игрока к цели
         player.teleport(target.getServerWorld(), target.getX(), target.getY(), target.getZ(), 
                        target.getYaw(), target.getPitch());
@@ -458,6 +506,13 @@ public final class RaceCommands {
             return 0;
         }
         
+        // ПРОВЕРКА: Целевой игрок должен быть в кастомном мире
+        String targetWorld = target.getServerWorld().getRegistryKey().getValue().toString();
+        if (!targetWorld.startsWith("fabric_race:")) {
+            source.sendFeedback(() -> Text.literal("Целевой игрок должен быть в кастомном мире!").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
         // Отправляем уведомление цели
         try {
             target.sendMessage(Text.literal("⚠ " + player.getName().getString() + " хочет присоединиться к вам через 5 секунд!").formatted(net.minecraft.util.Formatting.YELLOW), false);
@@ -466,13 +521,10 @@ public final class RaceCommands {
         
         // 5 сек = ~100 тиков
         try {
-            java.lang.reflect.Field f = race.server.RaceServerInit.class.getDeclaredField("pendingJoins");
-            f.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.Map<java.util.UUID, Object> map = (java.util.Map<java.util.UUID, Object>) f.get(null);
-            Class<?> pjClass = Class.forName("race.server.RaceServerInit$PendingJoin");
-            Object pj = pjClass.getDeclaredConstructor(java.util.UUID.class, int.class).newInstance(target.getUuid(), 100);
-            map.put(player.getUuid(), pj);
+            // Используем публичный API вместо рефлексии
+            var pendingJoins = race.server.RaceServerInit.getPendingJoins();
+            var pendingJoin = new race.server.RaceServerInit.PendingJoin(target.getUuid(), 100);
+            pendingJoins.put(player.getUuid(), pendingJoin);
             
             // Отправляем статус join-запроса клиенту
             try {
@@ -495,19 +547,13 @@ public final class RaceCommands {
         }
         
         try {
-            java.lang.reflect.Field f = race.server.RaceServerInit.class.getDeclaredField("pendingJoins");
-            f.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.Map<java.util.UUID, Object> map = (java.util.Map<java.util.UUID, Object>) f.get(null);
-            Object removed = map.remove(player.getUuid());
+            // Используем публичный API вместо рефлексии
+            var pendingJoins = race.server.RaceServerInit.getPendingJoins();
+            var removed = pendingJoins.remove(player.getUuid());
             if (removed != null) {
                 // Уведомляем цель о том, что запрос отменён
                 try {
-                    Class<?> pjClass = Class.forName("race.server.RaceServerInit$PendingJoin");
-                    java.lang.reflect.Field targetField = pjClass.getDeclaredField("target");
-                    targetField.setAccessible(true);
-                    java.util.UUID targetId = (java.util.UUID) targetField.get(removed);
-                    ServerPlayerEntity target = source.getServer().getPlayerManager().getPlayer(targetId);
+                    ServerPlayerEntity target = source.getServer().getPlayerManager().getPlayer(removed.target());
                     if (target != null) {
                         target.sendMessage(Text.literal("❌ " + player.getName().getString() + " отменил запрос на присоединение").formatted(net.minecraft.util.Formatting.RED), false);
                     }
@@ -573,45 +619,9 @@ public final class RaceCommands {
         return 1;
     }
     
-    private static int showReplays(CommandContext<ServerCommandSource> ctx) {
-        ServerCommandSource source = ctx.getSource();
-        
-        source.sendFeedback(() -> Text.literal("=== Доступные повторы ===").formatted(net.minecraft.util.Formatting.GOLD), false);
-        
-        var replays = ReplayManager.getAvailableReplays();
-        if (replays.isEmpty()) {
-            source.sendFeedback(() -> Text.literal("Повторы не найдены").formatted(net.minecraft.util.Formatting.GRAY), false);
-        } else {
-            for (int i = 0; i < Math.min(replays.size(), 10); i++) {
-                String replay = replays.get(i);
-                final int index = i + 1; // Создаем final копию для лямбда-выражения
-                source.sendFeedback(() -> Text.literal(index + ". " + replay).formatted(net.minecraft.util.Formatting.WHITE), false);
-            }
-        }
-        
-        return 1;
-    }
+
     
-    private static int showRanking(CommandContext<ServerCommandSource> ctx) {
-        ServerCommandSource source = ctx.getSource();
-        
-        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
-            source.sendFeedback(() -> Text.literal("Только игроки могут просматривать рейтинг").formatted(net.minecraft.util.Formatting.RED), false);
-            return 0;
-        }
-        
-        var rank = RankingSystem.getPlayerRank(player.getUuid());
-        var stats = RankingSystem.getPlayerStatistics(player.getUuid());
-        
-        source.sendFeedback(() -> Text.literal("=== Ваш рейтинг ===").formatted(net.minecraft.util.Formatting.GOLD), false);
-        source.sendFeedback(() -> Text.literal("Ранг: " + rank.getRank().getDisplayName()).formatted(net.minecraft.util.Formatting.WHITE), false);
-        source.sendFeedback(() -> Text.literal("ELO: " + rank.getElo()).formatted(net.minecraft.util.Formatting.WHITE), false);
-        source.sendFeedback(() -> Text.literal("Гонок: " + stats.getTotalRaces()).formatted(net.minecraft.util.Formatting.WHITE), false);
-        source.sendFeedback(() -> Text.literal("Побед: " + stats.getWins()).formatted(net.minecraft.util.Formatting.WHITE), false);
-        source.sendFeedback(() -> Text.literal("Лучшее время: " + formatTime(stats.getBestTime())).formatted(net.minecraft.util.Formatting.WHITE), false);
-        
-        return 1;
-    }
+
     
     private static String formatTime(long milliseconds) {
         long seconds = milliseconds / 1000;
@@ -719,12 +729,11 @@ public final class RaceCommands {
             return 0;
         }
         
-        // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Проверяем, есть ли уже мир и не создавался ли он недавно
+        // ИСПРАВЛЕНИЕ: Проверяем, находится ли игрок уже в персональном мире
         boolean alreadyInRaceWorld = player.getServerWorld().getRegistryKey().getValue().toString().startsWith("fabric_race:");
-        boolean recentlyCreated = race.hub.HubManager.wasWorldRecentlyCreated(playerId, seed);
         
-        if (alreadyInRaceWorld && recentlyCreated) {
-            source.sendFeedback(() -> Text.literal("Вы уже в гонке! Используйте /race join для присоединения к другим игрокам.").formatted(net.minecraft.util.Formatting.YELLOW), false);
+        if (alreadyInRaceWorld) {
+            source.sendFeedback(() -> Text.literal("Вы уже в личном мире! Используйте /race join <игрок> для присоединения к другим игрокам.").formatted(net.minecraft.util.Formatting.YELLOW), false);
             return 1;
         }
         
@@ -733,16 +742,34 @@ public final class RaceCommands {
         if (playerCount >= 1) {
             // помечаем игрока как готового (для определения лидера на dedicated)
             race.hub.HubManager.markReady(player.getUuid());
-            // Запускаем гонку для всех готовых игроков с этим сидом
-            source.sendFeedback(() -> Text.literal("Создаю личный мир и телепортирую... (ожидайте личного старта)").formatted(net.minecraft.util.Formatting.YELLOW), false);
-            HubManager.startRaceForReadyPlayers(source.getServer()).handle((v, t) -> {
-                if (t != null) {
-                    source.sendFeedback(() -> Text.literal("Ошибка запуска: " + t.getMessage()).formatted(net.minecraft.util.Formatting.RED), false);
+            
+            // ТЕЛЕПОРТАЦИЯ: Создаем и прогреваем мир, затем телепортируем
+            try {
+                var personalWorld = race.server.world.EnhancedWorldManager.getOrCreateWorld(
+                    source.getServer(), player.getUuid(), seed, net.minecraft.world.World.OVERWORLD);
+            if (personalWorld != null) {
+                // Прогреваем чанки перед телепортацией
+                race.server.world.SpawnCache.warmupAndCache(personalWorld, personalWorld.getSpawnPos(), 2);
+                
+                // УПРОЩЕНИЕ: Миксин обработает null чанки безопасно
+
+                // Телепортируем в персональный мир
+                race.tp.SafeTeleport.toWorldSpawn(player, personalWorld);
+                    race.hub.HubManager.setLastWorldSeed(player.getUuid(), seed);
+                    
+                    // Сохраняем точку возврата
+                    race.server.world.ReturnPointRegistry.saveCurrent(player);
+                    
+                    source.sendFeedback(() -> Text.literal("Вы телепортированы в персональный мир! Используйте /race go для старта гонки.").formatted(net.minecraft.util.Formatting.GREEN), false);
+                    LOGGER.info("[Race] Player ready - teleported to personal world: {} -> {}", 
+                              player.getName().getString(), seed);
                 } else {
-                    source.sendFeedback(() -> Text.literal("Личные миры готовы. Используйте /race go когда будете готовы. Или /race clear если гонка не стартует").formatted(net.minecraft.util.Formatting.GREEN), true);
+                    source.sendFeedback(() -> Text.literal("Ошибка создания персонального мира").formatted(net.minecraft.util.Formatting.RED), false);
                 }
-                return null;
-            });
+            } catch (Throwable t) {
+                source.sendFeedback(() -> Text.literal("Ошибка при готовности: " + t.getMessage()).formatted(net.minecraft.util.Formatting.RED), false);
+                LOGGER.warn("[Race] Error during ready teleport: {}", t.getMessage());
+            }
         } else {
             source.sendFeedback(() -> Text.literal("Ожидаем других игроков с сидом " + seed + "...").formatted(net.minecraft.util.Formatting.YELLOW), false);
         }
@@ -1505,6 +1532,203 @@ public final class RaceCommands {
         
         race.server.world.PreferredWorldRegistry.clear(player.getUuid());
         ctx.getSource().sendFeedback(() -> Text.literal("Предпочитаемый мир очищен"), true);
+        return 1;
+    }
+    
+    /**
+     * Принудительно включает дымку параллельных игроков
+     */
+    private static int forceEnableGhosts(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        
+        // Принудительно включаем дымку
+        race.server.RaceServerInit.setDisplayParallelPlayers(true);
+        race.server.RaceServerInit.setGhostQualityLevel(3); // Максимальное качество
+        race.server.RaceServerInit.setAdaptiveGhostQuality(false); // Отключаем адаптивность
+        
+        source.sendFeedback(() -> Text.literal("Дымка параллельных игроков принудительно включена (качество: максимальное)").formatted(net.minecraft.util.Formatting.GREEN), true);
+        source.sendFeedback(() -> Text.literal("Адаптивное качество отключено для стабильной видимости").formatted(net.minecraft.util.Formatting.YELLOW), false);
+        
+        return 1;
+    }
+    
+    /**
+     * Показывает статус дымки параллельных игроков
+     */
+    private static int showGhostStatus(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        
+        boolean enabled = race.server.RaceServerInit.isDisplayParallelPlayers();
+        int quality = race.server.RaceServerInit.getGhostQualityLevel();
+        boolean adaptive = race.server.RaceServerInit.isAdaptiveGhostQuality();
+        double tps = race.server.RaceServerInit.getCurrentTPS();
+        
+        source.sendFeedback(() -> Text.literal("=== Статус дымки параллельных игроков ===").formatted(net.minecraft.util.Formatting.GOLD), false);
+        source.sendFeedback(() -> Text.literal("Включена: " + (enabled ? "ДА" : "НЕТ")).formatted(enabled ? net.minecraft.util.Formatting.GREEN : net.minecraft.util.Formatting.RED), false);
+        source.sendFeedback(() -> Text.literal("Качество: " + quality + " (0=отключено, 1=низкое, 2=среднее, 3=высокое)").formatted(net.minecraft.util.Formatting.YELLOW), false);
+        source.sendFeedback(() -> Text.literal("Адаптивное: " + (adaptive ? "ДА" : "НЕТ")).formatted(adaptive ? net.minecraft.util.Formatting.GREEN : net.minecraft.util.Formatting.RED), false);
+        source.sendFeedback(() -> Text.literal("TPS: " + String.format("%.2f", tps)).formatted(net.minecraft.util.Formatting.AQUA), false);
+        
+        // Дополнительная диагностика
+        int playerCount = source.getServer().getPlayerManager().getPlayerList().size();
+        source.sendFeedback(() -> Text.literal("Игроков на сервере: " + playerCount).formatted(net.minecraft.util.Formatting.AQUA), false);
+        
+        if (source.getEntity() instanceof ServerPlayerEntity player) {
+            String worldKey = player.getServerWorld().getRegistryKey().getValue().toString();
+            source.sendFeedback(() -> Text.literal("Ваш мир: " + worldKey).formatted(net.minecraft.util.Formatting.AQUA), false);
+            source.sendFeedback(() -> Text.literal("В персональном мире: " + (worldKey.startsWith("fabric_race:") ? "ДА" : "НЕТ")).formatted(worldKey.startsWith("fabric_race:") ? net.minecraft.util.Formatting.GREEN : net.minecraft.util.Formatting.RED), false);
+        }
+        
+        if (enabled && quality > 0) {
+            source.sendFeedback(() -> Text.literal("✅ Дымка должна работать!").formatted(net.minecraft.util.Formatting.GREEN), false);
+        } else {
+            source.sendFeedback(() -> Text.literal("❌ Дымка отключена или качество = 0").formatted(net.minecraft.util.Formatting.RED), false);
+        }
+        
+        return 1;
+    }
+    
+    /**
+     * Тестирует отправку дымки хосту
+     */
+    private static int testGhostTrail(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendFeedback(() -> Text.literal("Только игроки могут тестировать дымку").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Создаем тестовый след
+        var testPoints = new java.util.ArrayList<race.net.GhostTrailPayload.Point>();
+        testPoints.add(new race.net.GhostTrailPayload.Point(player.getX(), player.getY(), player.getZ()));
+        testPoints.add(new race.net.GhostTrailPayload.Point(player.getX() + 1, player.getY(), player.getZ()));
+        testPoints.add(new race.net.GhostTrailPayload.Point(player.getX() + 2, player.getY(), player.getZ()));
+        
+        var payload = new race.net.GhostTrailPayload("test_player", "Тест дымки", testPoints);
+        net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(player, payload);
+        
+        source.sendFeedback(() -> Text.literal("Отправлен тестовый след дымки").formatted(net.minecraft.util.Formatting.GREEN), true);
+        source.sendFeedback(() -> Text.literal("Если вы видите дымку - система работает!").formatted(net.minecraft.util.Formatting.YELLOW), false);
+        
+        return 1;
+    }
+
+    private static int unfreezePlayer(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendFeedback(() -> Text.literal("Только игроки могут использовать эту команду").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Принудительно размораживаем игрока
+        race.server.RaceServerInit.forceUnfreezePlayer(player);
+        
+        source.sendFeedback(() -> Text.literal("Вы разморожены! Теперь можете ломать блоки").formatted(net.minecraft.util.Formatting.GREEN), true);
+        
+        return 1;
+    }
+    
+    private static int unfreezeAllPlayers(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        
+        // Принудительно размораживаем всех игроков
+        race.server.RaceServerInit.forceUnfreezeAllPlayers(source.getServer());
+        
+        source.sendFeedback(() -> Text.literal("Все игроки разморожены!").formatted(net.minecraft.util.Formatting.GREEN), true);
+        
+        return 1;
+    }
+    
+    private static int showLobbyList(CommandContext<ServerCommandSource> ctx) {
+        ServerCommandSource source = ctx.getSource();
+        ServerPlayerEntity player = source.getPlayer();
+        
+        if (player == null) {
+            source.sendFeedback(() -> Text.literal("Команда доступна только игрокам!").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Отправляем список лобби игроку
+        race.server.RaceServerInit.invokeSendLobbyList(player);
+        source.sendFeedback(() -> Text.literal("Список лобби отправлен!").formatted(net.minecraft.util.Formatting.GREEN), false);
+        
+        return 1;
+    }
+
+    // Параллельная гонка - создаем новый мир с тем же сидом но на свободном слоте
+    private static int parallelRace(CommandContext<ServerCommandSource> ctx, String targetPlayerName) {
+        ServerCommandSource source = ctx.getSource();
+        
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            source.sendFeedback(() -> Text.literal("Только игроки могут создавать параллельные гонки").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Проверяем, не находится ли игрок уже в персональном мире
+        boolean alreadyInRaceWorld = player.getServerWorld().getRegistryKey().getValue().toString().startsWith("fabric_race:");
+        if (alreadyInRaceWorld) {
+            source.sendFeedback(() -> Text.literal("Вы уже в персональном мире! Используйте /race join для присоединения к другим игрокам.").formatted(net.minecraft.util.Formatting.YELLOW), false);
+            return 1;
+        }
+        
+        // Находим целевого игрока
+        ServerPlayerEntity target = source.getServer().getPlayerManager().getPlayer(targetPlayerName);
+        if (target == null) {
+            source.sendFeedback(() -> Text.literal("Игрок " + targetPlayerName + " не найден").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Получаем сид целевого игрока
+        long targetSeed = race.hub.HubManager.getPlayerSeedChoice(target.getUuid());
+        if (targetSeed < 0) {
+            source.sendFeedback(() -> Text.literal("У игрока " + targetPlayerName + " не установлен сид").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        // Проверяем, что целевой игрок в персональном мире
+        String targetWorldName = target.getServerWorld().getRegistryKey().getValue().toString();
+        if (!targetWorldName.startsWith("fabric_race:")) {
+            source.sendFeedback(() -> Text.literal("Игрок " + targetPlayerName + " не в персональном мире").formatted(net.minecraft.util.Formatting.RED), false);
+            return 0;
+        }
+        
+        try {
+            // Устанавливаем тот же сид для текущего игрока
+            race.hub.HubManager.setPlayerSeedChoice(player.getUuid(), targetSeed);
+            
+            // Находим свободный слот
+            int freeSlot = race.server.world.EnhancedWorldManager.findFirstFreeSlotForSeed(source.getServer(), targetSeed);
+            
+            // Создаем параллельный мир с тем же сидом но на свободном слоте
+            var parallelWorld = race.server.world.EnhancedWorldManager.getOrCreateWorldForParallelRace(
+                source.getServer(), player.getUuid(), freeSlot, targetSeed, net.minecraft.world.World.OVERWORLD);
+                
+            if (parallelWorld != null) {
+                // Прогреваем чанки перед телепортацией
+                race.server.world.SpawnCache.warmupAndCache(parallelWorld, parallelWorld.getSpawnPos(), 2);
+                
+                // УПРОЩЕНИЕ: Миксин обработает null чанки безопасно
+                
+                // Телепортируем в параллельный мир
+                race.tp.SafeTeleport.toWorldSpawn(player, parallelWorld);
+                race.hub.HubManager.setLastWorldSeed(player.getUuid(), targetSeed);
+                
+                // Сохраняем точку возврата
+                race.server.world.ReturnPointRegistry.saveCurrent(player);
+                
+                source.sendFeedback(() -> Text.literal("Вы телепортированы в параллельный мир (слот " + freeSlot + ") с сидом " + targetSeed + "!").formatted(net.minecraft.util.Formatting.GREEN), false);
+                LOGGER.info("[Race] Parallel race created: {} -> slot {} with seed {} (target: {})", 
+                          player.getName().getString(), freeSlot, targetSeed, targetPlayerName);
+            } else {
+                source.sendFeedback(() -> Text.literal("Ошибка создания параллельного мира").formatted(net.minecraft.util.Formatting.RED), false);
+            }
+        } catch (Exception e) {
+            source.sendFeedback(() -> Text.literal("Ошибка при создании параллельной гонки: " + e.getMessage()).formatted(net.minecraft.util.Formatting.RED), false);
+            LOGGER.warn("[Race] Error during parallel race creation: {}", e.getMessage());
+        }
+        
         return 1;
     }
 

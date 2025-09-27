@@ -23,9 +23,28 @@ import java.util.Objects;
 @Mixin(ChunkDataSender.class)
 abstract class MixinChunkDataSender {
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     @Inject(method = "sendChunkData(Lnet/minecraft/server/network/ServerPlayNetworkHandler;Lnet/minecraft/server/world/ServerWorld;Lnet/minecraft/world/chunk/WorldChunk;)V",
             at = @At("HEAD"), cancellable = true)
     private static void race$patch(ServerPlayNetworkHandler handler, ServerWorld world, WorldChunk chunk, CallbackInfo ci) {
+        // Null-guard для предотвращения NPE
+        if (world == null || chunk == null) {
+            ci.cancel();
+            return;
+        }
+        
+        var cm = world.getChunkManager();
+        if (cm == null) {
+            ci.cancel();
+            return;
+        }
+        
+        // Проверяем, что чанк полностью загружен
+        var ch = world.getChunk(chunk.getPos().x, chunk.getPos().z, net.minecraft.world.chunk.ChunkStatus.FULL, false);
+        if (ch == null) {
+            ci.cancel();
+            return;
+        }
 
         ServerPlayerEntity player = handler.player;
         PhaseState st = PhaseState.get(Objects.requireNonNull(player.getServer()));

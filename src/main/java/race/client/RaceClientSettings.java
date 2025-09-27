@@ -27,3 +27,4 @@ public final class RaceClientSettings {
         showSmoke = enabled;
     }
 }
+

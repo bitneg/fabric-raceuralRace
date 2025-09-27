@@ -46,6 +46,25 @@ public final class DeathEchoManager {
     private static final java.util.Map<UUID, Long> ACTIVE_GHOSTS = new java.util.concurrent.ConcurrentHashMap<>();
 
     private record TrailPoint(double x, double y, double z, long ms) {}
+    
+    
+    
+    /**
+     * Получает ключ измерения из ключа мира
+     */
+    private static String getDimensionKey(net.minecraft.registry.RegistryKey<net.minecraft.world.World> worldKey) {
+        try {
+            String path = worldKey.getValue().getPath();
+            
+            // Формат: "player_<uuid>_<seed>_<dimension>"
+            // Извлекаем dimension из конца пути
+            String[] parts = path.split("_");
+            String dimension = parts.length > 0 ? parts[parts.length - 1] : "overworld";
+            return dimension;
+        } catch (Throwable e) {
+            return "overworld";
+        }
+    }
 
     public static void onPlayerDeath(ServerPlayerEntity player, net.minecraft.entity.damage.DamageSource source) {
         MinecraftServer server = player.getServer();
@@ -66,9 +85,11 @@ public final class DeathEchoManager {
         DeathEchoState state = DeathEchoState.get(server);
         state.addEcho(seed, dim, bp, msg, player.getGameProfile().getName());
         state.markDirty();
-        // Спавним маркер во всех мирах с тем же сидом и типом измерения
+        // ИСПРАВЛЕНИЕ: Спавним маркер только в ДРУГИХ мирах с тем же сидом и типом измерения
+        ServerWorld deathWorld = player.getServerWorld();
         for (ServerWorld w : server.getWorlds()) {
             if (!isPersonalWorld(w)) continue;
+            if (w == deathWorld) continue; // НЕ спавним в том же мире, где произошла смерть
             long s = tryParseSeed(w.getRegistryKey());
             if (s != seed) continue;
             if (!getDimKey(w).equals(dim)) continue;
@@ -201,11 +222,22 @@ public final class DeathEchoManager {
             if ((i++ % step) == 0) pts.add(new race.net.GhostTrailPayload.Point(tp.x, tp.y, tp.z)); 
         }
         
-        // Рассылаем пейлоад клиентам этого мира
+        // Рассылаем пейлоад всем игрокам в том же измерении в персональных мирах
         try {
             var payload = new race.net.GhostTrailPayload(playerId.toString(), cause, pts);
-            for (var p : world.getPlayers()) {
-                net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p, payload);
+            var server = world.getServer();
+            var worldDim = getDimensionKey(world.getRegistryKey());
+            
+            for (var p : server.getPlayerManager().getPlayerList()) {
+                var playerWorld = p.getServerWorld();
+                if (!isPersonalWorld(playerWorld)) continue;
+                
+                var playerDim = getDimensionKey(playerWorld.getRegistryKey());
+                
+                // Отправляем всем игрокам в том же измерении (независимо от seed/инстанса мира)
+                if (worldDim.equals(playerDim)) {
+                    net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking.send(p, payload);
+                }
             }
         } catch (Throwable ignored) {}
     }
@@ -313,7 +345,7 @@ public final class DeathEchoManager {
         return w.getRegistryKey().getValue().getPath();
     }
 
-    private static long tryParseSeed(net.minecraft.registry.RegistryKey<World> key) {
+    public static long tryParseSeed(net.minecraft.registry.RegistryKey<World> key) {
         String path = key.getValue().getPath();
         // формат slotX_overworld_s<seed>
         int i = path.lastIndexOf('_');

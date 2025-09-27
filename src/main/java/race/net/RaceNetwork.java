@@ -14,24 +14,8 @@ public final class RaceNetwork {
     }
 
     public static void updateProgress1Hz(ServerPlayerEntity p) {
-        long startTime = race.monitor.PerformanceMonitor.startOperation("updateProgress1Hz");
         try {
-            // Проверяем кеш перед созданием payload
-            var cached = race.cache.PerformanceCache.getPlayerCache(p.getUuid());
-            if (cached != null && !cached.isExpired()) {
-                // Используем кешированные данные
-                String playerName = p.getGameProfile().getName();
-                long rtaMs = System.currentTimeMillis() - race.server.RaceServerInit.getT0Ms();
-                String currentStage = "исследует";
-                Map<String, Long> milestoneTimes = new HashMap<>();
-                String worldName = cached.worldKey;
-                String activity = cached.activity;
-                
-                // PlayerProgressPayload удален - больше не отправляем
-                return;
-            }
-            
-            // Собираем модель прогресса
+            // Упрощенная версия без мониторинга производительности
             String playerName = p.getGameProfile().getName();
             long rtaMs = System.currentTimeMillis() - race.server.RaceServerInit.getT0Ms();
             String currentStage = "исследует";
@@ -39,18 +23,11 @@ public final class RaceNetwork {
             String worldName = p.getServerWorld().getRegistryKey().getValue().toString();
             String activity = "исследует";
             
-            // Кешируем данные
-            race.cache.PerformanceCache.setPlayerCache(p.getUuid(), worldName, -1L, activity);
-            
             // PlayerProgressPayload удален - больше не отправляем
         } catch (Throwable ignored) {}
-        finally {
-            race.monitor.PerformanceMonitor.endOperation("updateProgress1Hz", startTime);
-        }
     }
 
     public static void updateParallelPlayers2Hz(ServerPlayerEntity p) {
-        long startTime = race.monitor.PerformanceMonitor.startOperation("updateParallelPlayers2Hz");
         try {
             var payload = ParallelPlayersPayload.buildBucketed(p);
             int h = payload.stableHash();
@@ -60,8 +37,5 @@ public final class RaceNetwork {
                 payload.sendTo(p);
             }
         } catch (Throwable ignored) {}
-        finally {
-            race.monitor.PerformanceMonitor.endOperation("updateParallelPlayers2Hz", startTime);
-        }
     }
 }

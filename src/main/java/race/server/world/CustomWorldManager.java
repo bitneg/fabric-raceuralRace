@@ -2,81 +2,96 @@ package race.server.world;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.Identifier;
 import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.RegistryKeys;
 import net.minecraft.world.World;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 
-public class CustomWorldManager {
+/**
+ * Создание именованных (командных) миров без рандомных UUID.
+ * - Парсит slot из worldName "slotX_overworld_s<seed>" и использует getOrCreateWorldForGroup
+ * - Прогревает чанки до FULL перед любыми чтениями
+ * - Кэширует имя -> ServerWorld
+ */
+public final class CustomWorldManager {
     private static final Map<String, ServerWorld> customWorlds = new ConcurrentHashMap<>();
-    
+
     public static ServerWorld getOrCreateCustomWorld(MinecraftServer server, String worldName, long seed) {
-        try {
-            // Проверяем существующий мир
-            ServerWorld existingWorld = customWorlds.get(worldName);
-            if (existingWorld != null) {
-                System.out.println("✓ Reusing existing custom world: " + worldName);
-                return existingWorld;
-            }
-            
-            // Создаем ключ для мира
-            Identifier worldId = Identifier.of("fabric_race", worldName);
-            RegistryKey<World> worldKey = RegistryKey.of(RegistryKeys.WORLD, worldId);
-            
-            System.out.println("=== CREATING CUSTOM WORLD ===");
-            System.out.println("World name: " + worldName);
-            System.out.println("World key: " + worldKey);
-            System.out.println("Seed: " + seed);
-            
-            // ИСПРАВЛЕНИЕ: Используем существующий метод getOrCreateWorld
-            // Это гарантирует правильную регистрацию и синхронизацию
-            // Создаем фиктивный UUID для команды
-            UUID teamId = UUID.randomUUID();
-            ServerWorld customWorld = EnhancedWorldManager.getOrCreateWorld(
-                server, 
-                teamId, 
-                seed, 
-                World.OVERWORLD
-            );
-            
-            if (customWorld == null) {
-                System.err.println("Failed to create world with EnhancedWorldManager, falling back to overworld");
-                return server.getOverworld();
-            }
-            
-            // Кэшируем мир
-            customWorlds.put(worldName, customWorld);
-            
-            System.out.println("✓ Custom world created and registered: " + worldName);
-            System.out.println("✓ World registry key: " + customWorld.getRegistryKey());
-            System.out.println("✓ Dimension type entry in world: " + customWorld.getDimensionEntry());
-            
-            return customWorld;
-            
-        } catch (Exception e) {
-            System.err.println("Failed to create custom world '" + worldName + "': " + e.getMessage());
-            e.printStackTrace();
-            
-            // Fallback к overworld
-            System.out.println("Falling back to overworld");
-            return server.getOverworld();
+        ServerWorld existing = customWorlds.get(worldName);
+        if (existing != null) return existing;
+
+        int slot = extractSlot(worldName);
+        RegistryKey<World> dimKey = extractDimension(worldName);
+        if (slot <= 0) {
+            slot = EnhancedWorldManager.findFirstFreeSlotForSeed(server, seed);
+            System.out.println("⚠ Slot not found in name, assigned free slot " + slot + " for " + worldName);
         }
+
+        ServerWorld w = EnhancedWorldManager.getOrCreateWorldForGroup(server, slot, seed, dimKey);
+        if (w == null) return server.getOverworld();
+
+        // Прогрев спавн-чанков до FULL
+        var spawn = w.getSpawnPos();
+        int cx = spawn.getX() >> 4, cz = spawn.getZ() >> 4;
+        w.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                w.getChunk(cx + dx, cz + dz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            }
+        }
+
+        customWorlds.put(worldName, w);
+        return w;
     }
-    
+
     public static ServerWorld getOrCreatePersonalWorld(MinecraftServer server, UUID playerId, long seed) {
-        String worldName = "player_" + playerId.toString().replace("-", "") + "_s" + seed;
-        return getOrCreateCustomWorld(server, worldName, seed);
+        // Важно: привязать слот к seed
+        int slot = EnhancedWorldManager.getOrAssignSlot(server, playerId, seed);
+        if (slot <= 0) {
+            slot = EnhancedWorldManager.findFirstFreeSlotForSeed(server, seed);
+        }
+        ServerWorld w = EnhancedWorldManager.getOrCreateWorldForGroup(server, slot, seed, World.OVERWORLD);
+        if (w == null) return server.getOverworld();
+
+        // Прогрев спавн-чанков до FULL
+        var spawn = w.getSpawnPos();
+        int cx = spawn.getX() >> 4, cz = spawn.getZ() >> 4;
+        w.getChunk(cx, cz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                w.getChunk(cx + dx, cz + dz, net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            }
+        }
+        return w;
     }
-    
+
     public static void cleanupWorld(String worldName) {
         customWorlds.remove(worldName);
     }
-    
+
     public static Map<String, ServerWorld> getAllCustomWorlds() {
         return new ConcurrentHashMap<>(customWorlds);
     }
+
+    private static int extractSlot(String name) {
+        try {
+            int i = name.indexOf("slot");
+            if (i >= 0) {
+                int j = i + 4, k = j;
+                while (k < name.length() && Character.isDigit(name.charAt(k))) k++;
+                return Integer.parseInt(name.substring(j, k));
+            }
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
+    private static RegistryKey<World> extractDimension(String name) {
+        if (name.contains("_nether_")) return World.NETHER;
+        if (name.contains("_end_")) return World.END;
+        return World.OVERWORLD;
+    }
+
+    private CustomWorldManager() {}
 }

@@ -44,6 +44,8 @@ public final class RaceClientInit implements ClientModInitializer {
         // Приём лайв‑точек параллельных игроков — шлём в DeathEchoRenderer
         ClientPlayNetworking.registerGlobalReceiver(ParallelPlayersPayload.ID, (payload, ctx) ->
                 ctx.client().execute(() -> {
+                    System.out.println("[Race] Клиент получил ParallelPlayersPayload: " + payload.points().size() + " точек");
+                    
                     // 1) Новый дальний шлейф
                     java.util.Map<String, java.util.List<race.net.GhostTrailPayload.Point>> byPlayer = new java.util.HashMap<>();
                     for (var p : payload.points()) {
@@ -60,9 +62,16 @@ public final class RaceClientInit implements ClientModInitializer {
 
         // Приём призрачных шлейфов
         ClientPlayNetworking.registerGlobalReceiver(race.net.GhostTrailPayload.ID, (payload, ctx) ->
-                ctx.client().execute(() ->
-                        race.client.death.DeathEchoRenderer.addTrail(payload.playerName(), payload.cause(), payload.points())
-                )
+                ctx.client().execute(() -> {
+                    System.out.println("[Race] Клиент получил GhostTrailPayload: " + payload.playerName() + 
+                                     " (точек: " + payload.points().size() + ")");
+                    
+                    // Обрабатываем через DeathEchoRenderer
+                    race.client.death.DeathEchoRenderer.addTrail(payload.playerName(), payload.cause(), payload.points());
+                    
+                    // Также добавляем в GhostOverlay для совместимости
+                    race.client.GhostOverlay.addTrail(payload.playerName(), payload.cause(), payload.points());
+                })
         );
 
 
@@ -82,9 +91,7 @@ public final class RaceClientInit implements ClientModInitializer {
         // Тикер RTA/прогресса
         RaceClientEvents.hookClientTick();
         
-        // Клиентский эмиттер дымки
-        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> 
-            race.client.death.DeathEchoRenderer.clientTick());
+        // Клиентский эмиттер дымки (удален - не нужен в новой версии)
         
         // Пакет маркеров смерти уже зарегистрирован в FabricRaceMod
         

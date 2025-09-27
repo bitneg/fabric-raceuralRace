@@ -48,6 +48,8 @@ public final class EnhancedRaceHud {
     // ---------- Константы макета ----------
     private static final int HUD_MARGIN = 8;
     private static final int ROW_HEIGHT = 14;
+    
+    // Убран throttling - он вызывает мигание HUD
     private static final int PLAYER_INFO_BASE_HEIGHT = 56;
     private static final int PROGRESS_SECTION_MIN_ROWS = 3;
     private static final int OTHER_PLAYERS_MIN_ROWS = 3;
@@ -137,6 +139,9 @@ public final class EnhancedRaceHud {
 
         // TPS-оверлей
         drawTpsInfo(ctx, screenW, screenH);
+        
+        // Рендерим дымку параллельных игроков
+        race.client.GhostOverlay.render(ctx, mc.getRenderTickCounter());
 
         // Обновление прогресса делаем безопасно
         safeUpdateProgress();

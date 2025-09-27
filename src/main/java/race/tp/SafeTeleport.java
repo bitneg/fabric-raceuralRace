@@ -8,7 +8,7 @@ import race.server.world.SpawnCache;
 public final class SafeTeleport {
     public static void toWorldSpawn(ServerPlayerEntity p, ServerWorld target) {
         BlockPos pos = SpawnCache.getSafe(target);
-        // без ensureLoaded FULL; чанки уже прогреты заранее
+        // УПРОЩЕНИЕ: Просто телепортируем, миксин обработает null чанки
         p.teleport(target, pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5,
                    p.getYaw(), p.getPitch());
     }
