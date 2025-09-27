@@ -23,25 +23,93 @@ public class MixinEndPortalBlock {
     private void onEntityCollision(net.minecraft.block.BlockState state, World world, 
                                   BlockPos pos, Entity entity, CallbackInfo ci) {
         
-        if (PhaseState.isRaceActive() && entity instanceof ServerPlayerEntity player) {
+        if (entity instanceof ServerPlayerEntity player) {
             if (world instanceof ServerWorld serverWorld) {
-                // Проверяем, что игрок в кастомном End мире
-                if (WorldManager.isEndDimension(serverWorld)) {
-                    String worldName = serverWorld.getRegistryKey().getValue().getPath();
+                // ИСПРАВЛЕНИЕ: Проверяем, что игрок в персональном мире (любом)
+                String worldName = serverWorld.getRegistryKey().getValue().toString();
+                if (worldName.startsWith("fabric_race:")) {
+                    // Игрок в персональном мире - перенаправляем в персональный энд
+                    teleportToPlayerEnd(player, serverWorld);
                     
-                    // Если это кастомный End мир игрока
-                    if (worldName.contains("end") && !worldName.equals("the_end")) {
-                        // Телепортируем в персональный Overworld игрока
-                        teleportToPlayerOverworld(player);
-                        
-                        // Отменяем ванильную телепортацию
-                        ci.cancel();
-                        
-                        System.out.println("✓ Redirected End portal teleportation to player's Overworld");
-                    }
+                    // Отменяем ванильную телепортацию
+                    ci.cancel();
+                    
+                    System.out.println("✓ Redirected End portal teleportation from personal world to personal End");
                 }
             }
         }
+    }
+    
+    /**
+     * Телепортирует игрока в его персональный End
+     */
+    private void teleportToPlayerEnd(ServerPlayerEntity player, ServerWorld currentWorld) {
+        try {
+            // Извлекаем слот и сид из текущего мира
+            String worldName = currentWorld.getRegistryKey().getValue().toString();
+            int slot = extractSlotFromWorldName(worldName);
+            long seed = extractSeedFromWorldName(worldName);
+            
+            if (slot > 0 && seed != -1) {
+                // Создаем персональный End мир
+                ServerWorld personalEndWorld = race.server.world.EnhancedWorldManager.getOrCreateWorldForGroup(
+                    player.getServer(), slot, seed, net.minecraft.world.World.END);
+                
+                if (personalEndWorld != null) {
+                    // Телепортируем в персональный End
+                    BlockPos spawnPos = personalEndWorld.getSpawnPos();
+                    player.teleport(personalEndWorld, 
+                        spawnPos.getX() + 0.5, spawnPos.getY() + 1, spawnPos.getZ() + 0.5, 0, 0);
+                    
+                    player.sendMessage(
+                        net.minecraft.text.Text.literal("Телепортация в ваш персональный End!")
+                            .formatted(net.minecraft.util.Formatting.GREEN), false);
+                            
+                    System.out.println("✓ Player teleported to personal End: " + 
+                                     personalEndWorld.getRegistryKey().getValue());
+                } else {
+                    // Fallback: телепортируем в хаб
+                    race.hub.HubManager.teleportToHub(player);
+                    player.sendMessage(
+                        net.minecraft.text.Text.literal("Персональный End не найден. Возвращаемся в хаб!")
+                            .formatted(net.minecraft.util.Formatting.YELLOW), false);
+                }
+            } else {
+                // Fallback: телепортируем в хаб
+                race.hub.HubManager.teleportToHub(player);
+                player.sendMessage(
+                    net.minecraft.text.Text.literal("Не удалось определить слот/сид. Возвращаемся в хаб!")
+                        .formatted(net.minecraft.util.Formatting.YELLOW), false);
+            }
+            
+        } catch (Exception e) {
+            System.err.println("Failed to teleport player to personal End: " + e.getMessage());
+            
+            // Emergency fallback: телепортируем в хаб
+            race.hub.HubManager.teleportToHub(player);
+        }
+    }
+    
+    private int extractSlotFromWorldName(String worldName) {
+        if (worldName.startsWith("fabric_race:slot")) {
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("slot(\\d+)_");
+            java.util.regex.Matcher matcher = pattern.matcher(worldName);
+            if (matcher.find()) {
+                return Integer.parseInt(matcher.group(1));
+            }
+        }
+        return -1;
+    }
+    
+    private long extractSeedFromWorldName(String worldName) {
+        if (worldName.contains("_s")) {
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("_s(\\d+)");
+            java.util.regex.Matcher matcher = pattern.matcher(worldName);
+            if (matcher.find()) {
+                return Long.parseLong(matcher.group(1));
+            }
+        }
+        return -1;
     }
     
     /**

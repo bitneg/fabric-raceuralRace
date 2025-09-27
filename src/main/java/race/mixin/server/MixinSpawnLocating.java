@@ -21,7 +21,9 @@ public class MixinSpawnLocating {
             int y = gen.getHeight(x, z, net.minecraft.world.Heightmap.Type.MOTION_BLOCKING, world, noise) + 1;
             cir.setReturnValue(new BlockPos(x, Math.max(y, world.getBottomY() + 1), z));
         } catch (Throwable t) {
-            cir.setReturnValue(new BlockPos(x, 200, z));
+            // ИСПРАВЛЕНИЕ: Не ставим мобов в воздух, используем безопасную высоту
+            int safeY = Math.max(world.getBottomY() + 1, 64); // минимум 64, но не ниже дна мира
+            cir.setReturnValue(new BlockPos(x, safeY, z));
         }
     }
 }

@@ -179,22 +179,86 @@ public final class RaceServerInit implements ModInitializer {
                 boolean hasReturnPoint = race.server.world.ReturnPointRegistry.hasReturnPoint(player.getUuid());
                 long playerSeed = race.hub.HubManager.getPlayerSeedChoice(player.getUuid());
                 
-                if (hasReturnPoint && playerSeed > 0) {
-                    // Возвращаем игрока в его персональный мир, если он был там ранее
-                    var personalWorld = race.server.world.EnhancedWorldManager.getOrCreateWorld(
-                        server, player.getUuid(), playerSeed, net.minecraft.world.World.OVERWORLD);
-                    if (personalWorld != null) {
-                        // Телепортируем в персональный мир
-                        race.tp.SafeTeleport.toWorldSpawn(player, personalWorld);
-                        LOGGER.info("[Race] Player returned to saved position in race world: {}", player.getName().getString());
+                // DEBUG: Логируем состояние игрока
+                LOGGER.info("[Race] Player {} - hasReturnPoint: {}, playerSeed: {}", 
+                          player.getName().getString(), hasReturnPoint, playerSeed);
+                
+                // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+                if (hasReturnPoint && playerSeed != -1) {
+                    // ИСПРАВЛЕНИЕ: Используем сохраненную позицию для возврата в правильный мир
+                    var returnPoint = race.server.world.ReturnPointRegistry.get(player);
+                    if (returnPoint != null) {
+                        // Возвращаем игрока в сохраненную позицию (включая ад и энд)
+                        boolean success = race.server.world.ReturnPointRegistry.returnPlayer(player);
+                        if (success) {
+                            LOGGER.info("[Race] Player returned to saved position in world: {} -> {}", 
+                                      player.getName().getString(), returnPoint.worldKey.getValue());
+                        } else {
+                            LOGGER.warn("[Race] Failed to return player to saved position, trying to restore world from return point");
+                            // ИСПРАВЛЕНИЕ: Пытаемся восстановить мир из сохраненной позиции
+                            try {
+                                // Пытаемся восстановить мир по сохраненному ключу
+                                var restoredWorld = server.getWorld(returnPoint.worldKey);
+                                if (restoredWorld != null) {
+                                    race.tp.SafeTeleport.toWorldSpawn(player, restoredWorld);
+                                    LOGGER.info("[Race] Player returned to restored world: {} -> {}", 
+                                              player.getName().getString(), returnPoint.worldKey.getValue());
+                                } else {
+                                    // Если мир не найден, создаем новый с тем же сидом и типом
+                                    var worldType = returnPoint.worldKey.getValue().getPath().contains("nether") ? 
+                                                  net.minecraft.world.World.NETHER : 
+                                                  returnPoint.worldKey.getValue().getPath().contains("end") ? 
+                                                  net.minecraft.world.World.END : 
+                                                  net.minecraft.world.World.OVERWORLD;
+                                    
+                                    var personalWorld = race.server.world.EnhancedWorldManager.getOrCreateWorld(
+                                        server, player.getUuid(), playerSeed, worldType);
+                                    if (personalWorld != null) {
+                                        race.tp.SafeTeleport.toWorldSpawn(player, personalWorld);
+                                        LOGGER.info("[Race] Player returned to recreated world: {} -> {}", 
+                                                  player.getName().getString(), personalWorld.getRegistryKey().getValue());
+                                    }
+                                }
+                            } catch (Exception e) {
+                                LOGGER.error("[Race] Failed to restore world from return point: {}", e.getMessage());
+                                // Последний fallback - хаб
+                                if (race.hub.HubManager.isHubActive()) {
+                                    race.hub.HubManager.teleportToHub(player);
+                                    LOGGER.info("[Race] Player teleported to hub as final fallback: {}", player.getName().getString());
+                                }
+                            }
+                        }
                     }
                 } else {
-                    // ИСПРАВЛЕНИЕ: Если у игрока нет сохраненной позиции в race мире, телепортируем в хаб
-                    if (race.hub.HubManager.isHubActive()) {
-                        race.hub.HubManager.teleportToHub(player);
-                        LOGGER.info("[Race] Player teleported to hub: {}", player.getName().getString());
+                    // ИСПРАВЛЕНИЕ: Если у игрока нет сохраненной позиции, пытаемся определить слот по сиду
+                    LOGGER.info("[Race] No return point found for player {}, trying to determine slot from seed {}", 
+                              player.getName().getString(), playerSeed);
+                    
+                    // Пытаемся найти существующий мир с этим сидом
+                    ServerWorld existingWorld = null;
+                    for (ServerWorld world : server.getWorlds()) {
+                        if (world.getRegistryKey().getValue().getNamespace().equals("fabric_race")) {
+                            long worldSeed = tryParseSeed(world.getRegistryKey());
+                            if (worldSeed == playerSeed) {
+                                existingWorld = world;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (existingWorld != null) {
+                        // Найден существующий мир с этим сидом - телепортируем туда
+                        race.tp.SafeTeleport.toWorldSpawn(player, existingWorld);
+                        LOGGER.info("[Race] Player returned to existing world with same seed: {} -> {}", 
+                                  player.getName().getString(), existingWorld.getRegistryKey().getValue());
                     } else {
-                        LOGGER.warn("[Race] Hub is not active, player will spawn in default world: {}", player.getName().getString());
+                        // Мир не найден - телепортируем в хаб
+                        if (race.hub.HubManager.isHubActive()) {
+                            race.hub.HubManager.teleportToHub(player);
+                            LOGGER.info("[Race] Player teleported to hub: {}", player.getName().getString());
+                        } else {
+                            LOGGER.warn("[Race] Hub is not active, player will spawn in default world: {}", player.getName().getString());
+                        }
                     }
                 }
             } catch (Throwable t) {
@@ -617,11 +681,13 @@ public final class RaceServerInit implements ModInitializer {
                               handler.player.getName().getString(), isAlive, handler.player.getServerWorld().getRegistryKey().getValue());
                     
                     ServerWorld playerWorld = handler.player.getServerWorld();
+                    // ИСПРАВЛЕНИЕ: Проверяем все персональные миры (включая ад и энд)
                     if (playerWorld != null && playerWorld.getRegistryKey().getValue().getNamespace().equals("fabric_race")) {
                         try {
                             race.server.world.ReturnPointRegistry.saveCurrent(handler.player);
-                            LOGGER.info("[Race] Saved player position before disconnect at: {} {} {}", 
-                                      handler.player.getName().getString(), handler.player.getX(), handler.player.getY(), handler.player.getZ());
+                            LOGGER.info("[Race] Saved player position before disconnect at: {} {} {} in world {}", 
+                                      handler.player.getName().getString(), handler.player.getX(), handler.player.getY(), handler.player.getZ(),
+                                      playerWorld.getRegistryKey().getValue());
                         } catch (Throwable t) {
                             LOGGER.warn("[Race] Failed to save player position: {}", t.getMessage());
                         }
@@ -647,16 +713,16 @@ public final class RaceServerInit implements ModInitializer {
                                   playerWorld.getRegistryKey().getValue(), handler.player.getName().getString(), t.getMessage());
                     }
                     
-                    // ИСПРАВЛЕНИЕ: Очищаем сид игрока при отключении
-                    try {
-                        long playerSeed = race.hub.HubManager.getPlayerSeedChoice(handler.player.getUuid());
-                        if (playerSeed >= 0) {
-                            race.hub.HubManager.clearPlayerSeedChoice(handler.player.getUuid());
-                            LOGGER.info("[Race] Cleared seed choice for disconnected player: {}", handler.player.getName().getString());
-                        }
-                    } catch (Throwable t) {
-                        LOGGER.warn("[Race] Failed to clear seed choice for player: {}", t.getMessage());
-                    }
+                    // ИСПРАВЛЕНИЕ: НЕ очищаем сид игрока при отключении - он нужен для возврата
+                    // try {
+                    //     long playerSeed = race.hub.HubManager.getPlayerSeedChoice(handler.player.getUuid());
+                    //     if (playerSeed >= 0) {
+                    //         race.hub.HubManager.clearPlayerSeedChoice(handler.player.getUuid());
+                    //         LOGGER.info("[Race] Cleared seed choice for disconnected player: {}", handler.player.getName().getString());
+                    //     }
+                    // } catch (Throwable t) {
+                    //     LOGGER.warn("[Race] Failed to clear seed choice for player: {}", t.getMessage());
+                    // }
                 }
             } catch (Throwable ignored) {}
         });

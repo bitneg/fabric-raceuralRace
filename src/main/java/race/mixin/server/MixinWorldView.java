@@ -21,7 +21,7 @@ public interface MixinWorldView {
         String key = serverWorld.getRegistryKey().getValue().toString();
         if (!key.startsWith("fabric_race:")) return;
         
-        // ИСПРАВЛЕНИЕ: Используем правильные биомы для каждого измерения
+        // ИСПРАВЛЕНИЕ: Устанавливаем правильные биомы только для ада и энда, оверворлд оставляем ванильным
         var dim = serverWorld.getDimensionEntry();
         if (dim.matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER)) {
             // В аду используем биом ада для правильного спавна мобов
@@ -31,11 +31,8 @@ public interface MixinWorldView {
             // В энде используем биом энда
             RegistryEntry<Biome> endBiome = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.THE_END);
             cir.setReturnValue(endBiome);
-        } else {
-            // В оверворлде используем равнины
-            RegistryEntry<Biome> plains = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.PLAINS);
-            cir.setReturnValue(plains);
         }
+        // Оверворлд оставляем ванильным - не вмешиваемся в генерацию биомов
     }
 
 

@@ -733,7 +733,8 @@ public final class RaceCommands {
         
         // Проверяем, есть ли другие игроки с этим сидом
         int playerCount = HubManager.getSeedPlayerCount(seed);
-        if (playerCount >= 1) {
+        // ИСПРАВЛЕНИЕ: Разрешаем старт гонки даже для первого игрока
+        if (playerCount >= 0) {
             // помечаем игрока как готового (для определения лидера на dedicated)
             race.hub.HubManager.markReady(player.getUuid());
             
@@ -784,8 +785,9 @@ public final class RaceCommands {
             if (members == null || members.isEmpty()) members = java.util.List.of(leaderId);
 
             long seed = race.hub.HubManager.getPlayerSeedChoice(leaderId);
-            if (seed < 0) seed = race.server.world.ServerRaceConfig.GLOBAL_SEED;
-            if (seed < 0) {
+            // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+            if (seed == -1) seed = race.server.world.ServerRaceConfig.GLOBAL_SEED;
+            if (seed == -1) {
                 source.sendFeedback(() -> Text.literal("Сначала выберите сид (/race seed) и нажмите Ready").formatted(net.minecraft.util.Formatting.YELLOW), false);
                 return 0;
             }

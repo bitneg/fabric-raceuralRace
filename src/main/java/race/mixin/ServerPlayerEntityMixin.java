@@ -17,8 +17,9 @@ public class ServerPlayerEntityMixin {
         ServerPlayerEntity player = (ServerPlayerEntity)(Object)this;
         ServerWorld targetWorld = target.world();
         
-        // Перехватываем телепортацию в ванильный End
-        if (targetWorld.getRegistryKey().getValue().toString().equals("minecraft:the_end")) {
+        // Перехватываем телепортацию в ванильный End для игроков в персональных мирах
+        if (targetWorld.getRegistryKey().getValue().toString().equals("minecraft:the_end") && 
+            player.getServerWorld().getRegistryKey().getValue().getNamespace().equals("fabric_race")) {
             try {
                 // Получаем слот игрока из его текущего мира
                 String currentWorldName = player.getServerWorld().getRegistryKey().getValue().toString();

@@ -45,8 +45,15 @@ public class SpawnHelperMixin {
             long slotTime = race.server.SlotTimeService.getTime(world.getRegistryKey());
             long tod = slotTime % 24000L;
             boolean isNight = tod >= 13000L && tod <= 23000L;
+            
+            // ИСПРАВЛЕНИЕ: Проверяем, что позиция спавна валидна
             if (!isNight) {
-                cir.setReturnValue(false); // день — блок
+                // Дополнительная проверка: если моб спавнится в пещере (ниже Y=60), разрешаем
+                if (pos.getY() < 60) {
+                    // Моб в пещере - разрешаем спавн даже днем
+                    return;
+                }
+                cir.setReturnValue(false); // день — блок только для поверхности
                 return;
             }
         }
