@@ -10,54 +10,54 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class WorldWeatherMixin {
     
     /**
-     * В гоночных мирах нет дождя
+     * ИСПРАВЛЕНИЕ: Возвращаем погоду в гоночные миры
      */
     @Inject(method = "isRaining", at = @At("HEAD"), cancellable = true)
     private void raceNoRain(CallbackInfoReturnable<Boolean> cir) {
-        World world = (World)(Object)this;
-        String worldName = world.getRegistryKey().getValue().toString();
-        
-        if (worldName.startsWith("fabric_race:")) {
-            cir.setReturnValue(false);
-        }
+        // Убираем блокировку погоды - пусть работает как обычно
+        // World world = (World)(Object)this;
+        // String worldName = world.getRegistryKey().getValue().toString();
+        // if (worldName.startsWith("fabric_race:")) {
+        //     cir.setReturnValue(false);
+        // }
     }
     
     /**
-     * В гоночных мирах нет грозы
+     * ИСПРАВЛЕНИЕ: Возвращаем грозу в гоночные миры
      */
     @Inject(method = "isThundering", at = @At("HEAD"), cancellable = true)
     private void raceNoThunder(CallbackInfoReturnable<Boolean> cir) {
-        World world = (World)(Object)this;
-        String worldName = world.getRegistryKey().getValue().toString();
-        
-        if (worldName.startsWith("fabric_race:")) {
-            cir.setReturnValue(false);
-        }
+        // Убираем блокировку грозы - пусть работает как обычно
+        // World world = (World)(Object)this;
+        // String worldName = world.getRegistryKey().getValue().toString();
+        // if (worldName.startsWith("fabric_race:")) {
+        //     cir.setReturnValue(false);
+        // }
     }
     
     /**
-     * В гоночных мирах нет дождя (градиент)
+     * ИСПРАВЛЕНИЕ: Возвращаем градиент дождя в гоночные миры
      */
     @Inject(method = "getRainGradient", at = @At("HEAD"), cancellable = true)
     private void raceNoRainGradient(float delta, CallbackInfoReturnable<Float> cir) {
-        World world = (World)(Object)this;
-        String worldName = world.getRegistryKey().getValue().toString();
-        
-        if (worldName.startsWith("fabric_race:")) {
-            cir.setReturnValue(0.0f);
-        }
+        // Убираем блокировку градиента дождя - пусть работает как обычно
+        // World world = (World)(Object)this;
+        // String worldName = world.getRegistryKey().getValue().toString();
+        // if (worldName.startsWith("fabric_race:")) {
+        //     cir.setReturnValue(0.0f);
+        // }
     }
     
     /**
-     * В гоночных мирах нет грозы (градиент)
+     * ИСПРАВЛЕНИЕ: Возвращаем градиент грозы в гоночные миры
      */
     @Inject(method = "getThunderGradient", at = @At("HEAD"), cancellable = true)
     private void raceNoThunderGradient(float delta, CallbackInfoReturnable<Float> cir) {
-        World world = (World)(Object)this;
-        String worldName = world.getRegistryKey().getValue().toString();
-        
-        if (worldName.startsWith("fabric_race:")) {
-            cir.setReturnValue(0.0f);
-        }
+        // Убираем блокировку градиента грозы - пусть работает как обычно
+        // World world = (World)(Object)this;
+        // String worldName = world.getRegistryKey().getValue().toString();
+        // if (worldName.startsWith("fabric_race:")) {
+        //     cir.setReturnValue(0.0f);
+        // }
     }
 }

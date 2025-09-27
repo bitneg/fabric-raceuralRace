@@ -639,14 +639,7 @@ public final class RaceCommands {
 
     private static int toggleGhosts(CommandContext<ServerCommandSource> ctx, boolean enable) {
         ServerCommandSource source = ctx.getSource();
-        try {
-            ServerPlayerEntity p = source.getPlayer();
-            if (p != null && source.getServer().getPlayerManager().isOperator(p.getGameProfile())) {
-                race.server.RaceServerInit.setDisplayParallelPlayers(enable);
-                source.sendFeedback(() -> Text.literal("Параллельные игроки: " + (enable ? "ON" : "OFF")).formatted(net.minecraft.util.Formatting.GREEN), true);
-                return 1;
-            }
-        } catch (Throwable ignored) {}
+        // ИСПРАВЛЕНИЕ: Убираем проверку на оператора - команда доступна всем игрокам
         race.server.RaceServerInit.setDisplayParallelPlayers(enable);
         source.sendFeedback(() -> Text.literal("Параллельные игроки: " + (enable ? "ON" : "OFF")).formatted(net.minecraft.util.Formatting.GREEN), true);
         return 1;
@@ -724,7 +717,8 @@ public final class RaceCommands {
         UUID playerId = player.getUuid();
         long seed = HubManager.getPlayerSeedChoice(playerId);
         
-        if (seed < 0) {
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+        if (seed == -1) {
             source.sendFeedback(() -> Text.literal("Сначала выберите сид командой /race seed <число>").formatted(net.minecraft.util.Formatting.RED), false);
             return 0;
         }
@@ -889,7 +883,8 @@ public final class RaceCommands {
         UUID playerId = player.getUuid();
         long seed = HubManager.getPlayerSeedChoice(playerId);
         
-        if (seed < 0) {
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+        if (seed == -1) {
             source.sendFeedback(() -> Text.literal("Сначала выберите сид командой /race seed <число>").formatted(net.minecraft.util.Formatting.RED), false);
             return 0;
         }
@@ -955,7 +950,8 @@ public final class RaceCommands {
         
         // Получаем всех участников команды
         long seed = race.hub.HubManager.getPlayerSeedChoice(player.getUuid());
-        if (seed < 0) {
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+        if (seed == -1) {
             source.sendFeedback(() -> Text.literal("Вы не состоите в команде").formatted(net.minecraft.util.Formatting.RED), false);
             return 0;
         }
@@ -993,7 +989,8 @@ public final class RaceCommands {
         
         // Проверяем, состоит ли игрок в команде
         long seed = race.hub.HubManager.getPlayerSeedChoice(player.getUuid());
-        if (seed < 0) {
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+        if (seed == -1) {
             source.sendFeedback(() -> Text.literal("Вы не состоите в команде").formatted(net.minecraft.util.Formatting.RED), false);
             return 0;
         }

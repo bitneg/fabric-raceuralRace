@@ -20,8 +20,22 @@ public interface MixinWorldView {
         if (!(self instanceof ServerWorld serverWorld)) return;
         String key = serverWorld.getRegistryKey().getValue().toString();
         if (!key.startsWith("fabric_race:")) return;
-        RegistryEntry<Biome> plains = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.PLAINS);
-        cir.setReturnValue(plains);
+        
+        // ИСПРАВЛЕНИЕ: Используем правильные биомы для каждого измерения
+        var dim = serverWorld.getDimensionEntry();
+        if (dim.matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER)) {
+            // В аду используем биом ада для правильного спавна мобов
+            RegistryEntry<Biome> netherWastes = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.NETHER_WASTES);
+            cir.setReturnValue(netherWastes);
+        } else if (dim.matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END)) {
+            // В энде используем биом энда
+            RegistryEntry<Biome> endBiome = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.THE_END);
+            cir.setReturnValue(endBiome);
+        } else {
+            // В оверворлде используем равнины
+            RegistryEntry<Biome> plains = serverWorld.getRegistryManager().get(RegistryKeys.BIOME).entryOf(BiomeKeys.PLAINS);
+            cir.setReturnValue(plains);
+        }
     }
 
 

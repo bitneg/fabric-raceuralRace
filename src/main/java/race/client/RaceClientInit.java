@@ -44,7 +44,6 @@ public final class RaceClientInit implements ClientModInitializer {
         // Приём лайв‑точек параллельных игроков — шлём в DeathEchoRenderer
         ClientPlayNetworking.registerGlobalReceiver(ParallelPlayersPayload.ID, (payload, ctx) ->
                 ctx.client().execute(() -> {
-                    System.out.println("[Race] Клиент получил ParallelPlayersPayload: " + payload.points().size() + " точек");
                     
                     // 1) Новый дальний шлейф
                     java.util.Map<String, java.util.List<race.net.GhostTrailPayload.Point>> byPlayer = new java.util.HashMap<>();
@@ -63,8 +62,6 @@ public final class RaceClientInit implements ClientModInitializer {
         // Приём призрачных шлейфов
         ClientPlayNetworking.registerGlobalReceiver(race.net.GhostTrailPayload.ID, (payload, ctx) ->
                 ctx.client().execute(() -> {
-                    System.out.println("[Race] Клиент получил GhostTrailPayload: " + payload.playerName() + 
-                                     " (точек: " + payload.points().size() + ")");
                     
                     // Обрабатываем через DeathEchoRenderer
                     race.client.death.DeathEchoRenderer.addTrail(payload.playerName(), payload.cause(), payload.points());

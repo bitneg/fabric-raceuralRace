@@ -26,7 +26,8 @@ public class PortalMixin {
         if (!(entity instanceof ServerPlayerEntity player)) return;
 
         long seed = race.hub.HubManager.getPlayerSeedChoice(player.getUuid());
-        if (seed <= 0) return;
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды, но блокируем только -1 (не выбран)
+        if (seed == -1) return;
 
         boolean fromOW = srcWorld.getRegistryKey() == World.OVERWORLD
                 || (srcWorld.getRegistryKey().getValue().getNamespace().equals("fabric_race")

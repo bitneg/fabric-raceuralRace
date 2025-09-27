@@ -32,9 +32,15 @@ public final class SelectSeedScreen extends Screen {
 
     private long generateVanillaLikeSeed() {
         java.util.Random random = new java.util.Random();
-        // Генерируем сид как в ванильном Minecraft - в разумном диапазоне
-        // Обычно используются сиды от -2^31 до 2^31-1 для лучшей совместимости
-        return random.nextLong() & 0x7FFFFFFFFFFFFFFFL; // Убираем знаковый бит для положительных значений
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды как в ванильном Minecraft
+        // 50% шанс на отрицательный сид для разнообразия
+        if (random.nextBoolean()) {
+            // Генерируем отрицательный сид
+            return -random.nextLong();
+        } else {
+            // Генерируем положительный сид
+            return random.nextLong();
+        }
     }
     
     private void send() {

@@ -1,7 +1,6 @@
 package race.mixin.server;
 
 import net.minecraft.entity.SpawnGroup;
-import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.SpawnHelper;
@@ -28,33 +27,28 @@ public class SpawnHelperMixin {
         BlockPos.Mutable pos, double squaredDistance,
         CallbackInfoReturnable<Boolean> cir) {
         
-        String worldName = world.getRegistryKey().getValue().toString();
-        if (!worldName.startsWith("fabric_race:")) {
+        // Работать только в наших гоночных мирах
+        String name = world.getRegistryKey().getValue().toString();
+        if (!name.startsWith("fabric_race:")) {
             return; // Обычная логика для не-гоночных миров
         }
         
-        // ИСПРАВЛЕНИЕ: Убираем проверку StructureAccessor - она не нужна
-        // StructureAccessor защищен в StructureAccessorMixin
+        // 1) В аду и энде — чистая ванила (ничего не отменяем)
+        var dim = world.getDimensionEntry();
+        if (dim.matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_NETHER)
+         || dim.matchesKey(net.minecraft.world.dimension.DimensionTypes.THE_END)) {
+            return; // ванильная логика целиком
+        }
         
-        // В гоночных мирах используем виртуальное время для враждебных мобов
+        // 2) Только оверворлд-слоты: ночь по виртуальному времени
         if (group == SpawnGroup.MONSTER) {
-            // Используем виртуальное время из SlotTimeService
             long slotTime = race.server.SlotTimeService.getTime(world.getRegistryKey());
-            long timeOfDay = slotTime % 24000L;
-            boolean isNight = timeOfDay >= 13000L && timeOfDay <= 23000L;
-            
+            long tod = slotTime % 24000L;
+            boolean isNight = tod >= 13000L && tod <= 23000L;
             if (!isNight) {
-                // День в мире - не спавним враждебных мобов
-                cir.setReturnValue(false);
+                cir.setReturnValue(false); // день — блок
                 return;
             }
-            
-            // DEBUG: Логируем успешный спавн
-            if (Math.random() < 0.01) { // 1% логов
-                System.out.println("[Race] Allowing monster spawn in world " + worldName + 
-                                  " (night time: " + timeOfDay + ")");
-            }
         }
-        // Для других типов мобов (животные, водные) - обычная логика (не отменяем)
     }
 }

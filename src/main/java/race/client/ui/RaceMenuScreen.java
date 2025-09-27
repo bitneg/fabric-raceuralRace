@@ -34,6 +34,11 @@ public class RaceMenuScreen extends Screen {
 	protected void init() {
 		int centerX = this.width / 2;
 		int y = this.height / 3;
+		
+		// ИСПРАВЛЕНИЕ: Синхронизируем состояние призраков с сервером при открытии меню
+		if (this.client != null && this.client.player != null) {
+			this.client.player.networkHandler.sendChatCommand("race ghosts status");
+		}
 		// Временно отключаем размытие фона меню через accessor, если поле существует
 		try {
 			if (this.client != null && this.client.options != null) {
@@ -102,9 +107,15 @@ public class RaceMenuScreen extends Screen {
 	
 	private long generateVanillaLikeSeed() {
 		java.util.Random random = new java.util.Random();
-		// Генерируем сид как в ванильном Minecraft - в разумном диапазоне
-		// Обычно используются сиды от -2^31 до 2^31-1 для лучшей совместимости
-		return random.nextLong() & 0x7FFFFFFFFFFFFFFFL; // Убираем знаковый бит для положительных значений
+		// ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды как в ванильном Minecraft
+		// 50% шанс на отрицательный сид для разнообразия
+		if (random.nextBoolean()) {
+			// Генерируем отрицательный сид
+			return -random.nextLong();
+		} else {
+			// Генерируем положительный сид
+			return random.nextLong();
+		}
 	}
 
 	private void onClose() {
@@ -227,19 +238,32 @@ public class RaceMenuScreen extends Screen {
         for (ButtonWidget b : lobbyButtons) this.remove(b);
         lobbyButtons.clear();
 
-        // Старт Y для кнопок выравниваем с рендером списка (listStartY = this.height/3 + 140)
+        // ИСПРАВЛЕНИЕ: Точное выравнивание кнопок с элементами списка
         int listStartY = this.height / 3 + 140;
         int startY = listStartY + 18; // после заголовка "Players/Seeds:"
-        int xLeft = this.width / 2 - 180; // сдвигаем левее, чтобы сид не перекрывался кнопками
         int buttonsX = this.width / 2 + 100; // кнопки правее от центра
         int perPage = 8;
         int from = Math.min(page * perPage, Math.max(0, lobby.size()));
         int to = Math.min(from + perPage, lobby.size());
-        int rowH = 32; // две строки на запись (имя+сид, worldKey)
+        
+        // ИСПРАВЛЕНИЕ: Используем тот же алгоритм позиционирования, что и в render()
         for (int idx = from; idx < to; idx++) {
-            int i = idx - from;
             SeedLobbyEntry e = lobby.get(idx);
-            int y = startY + i * rowH;
+            int i = idx - from;
+            
+            // Точное позиционирование как в render() - каждая запись занимает разную высоту
+            int y = startY + 3; // базовая позиция первой записи
+            for (int j = 0; j < i; j++) {
+                // Вычисляем высоту каждой предыдущей записи
+                SeedLobbyEntry prevEntry = lobby.get(from + j);
+                String line2 = "[" + prevEntry.worldKey() + "]";
+                java.util.List<net.minecraft.text.OrderedText> wrapped = this.textRenderer.wrapLines(Text.literal(line2), 120);
+                y += 12 + 12 + 6; // высота первой строки + высота второй строки + отступ
+                y += (wrapped.size() - 1) * 12; // дополнительные строки если текст переносится
+            }
+            // ИСПРАВЛЕНИЕ: Позиционируем кнопки точно по центру текста записи
+            int buttonY = y + 6; // центрируем кнопки относительно текста
+            
             ButtonWidget raceBtn = ButtonWidget.builder(Text.literal("Race"), b -> {
                 // ИСПРАВЛЕНИЕ: Проверяем, не находится ли игрок уже в персональном мире
                 if (this.client != null && this.client.player != null) {
@@ -255,19 +279,19 @@ public class RaceMenuScreen extends Screen {
                 trySend("/race seed " + e.seed()); // Устанавливаем тот же сид
                 trySend("/race parallel " + e.playerName()); // Новая команда для параллельной гонки
                 this.close();
-            }).dimensions(buttonsX, y - 10, 60, 20).build();
+            }).dimensions(buttonsX, buttonY, 60, 20).build();
             ButtonWidget joinBtn = ButtonWidget.builder(Text.literal("Join"), b -> {
                 // ИСПРАВЛЕНИЕ: Используем правильную команду для присоединения
                 trySend("/race join " + e.playerName());
                 this.close();
-            }).dimensions(buttonsX + 65, y - 10, 60, 20).build();
+            }).dimensions(buttonsX + 65, buttonY, 60, 20).build();
             ButtonWidget spectBtn = ButtonWidget.builder(Text.literal("Spectate"), b -> {
                 trySend("/race spectate " + e.playerName());
                 this.close();
-            }).dimensions(buttonsX + 130, y - 10, 70, 20).build();
+            }).dimensions(buttonsX + 130, buttonY, 70, 20).build();
             ButtonWidget inviteBtn = ButtonWidget.builder(Text.literal("Invite Team"), b -> {
                 trySend("/race team invite " + e.playerName());
-            }).dimensions(buttonsX + 205, y - 10, 90, 20).build();
+            }).dimensions(buttonsX + 205, buttonY, 90, 20).build();
             // Скрываем Spectate для самого себя
             boolean isSelf = false;
             try {

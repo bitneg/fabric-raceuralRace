@@ -75,6 +75,7 @@ public final class RaceServerInit implements ModInitializer {
     // TPS мониторинг
     private static final java.util.Queue<Long> tickTimes = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static volatile double currentTPS = 20.0;
+    private static volatile double smoothedTPS = 20.0; // Сглаженный TPS для стабильности
     private static volatile boolean tpsDisplayEnabled = false;
     
     // Производительность
@@ -261,11 +262,13 @@ public final class RaceServerInit implements ModInitializer {
                     return;
                 }
                 
-                if (requested <= 0) {
-                    p.sendMessage(net.minecraft.text.Text.literal("Недопустимый сид: " + requested + ". Выберите корректный race seed.")
-                        .formatted(net.minecraft.util.Formatting.RED), false);
-                    return;
-                }
+                // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды как в ванильном Minecraft
+                // Убираем проверку на положительные значения
+                // if (requested <= 0) {
+                //     p.sendMessage(net.minecraft.text.Text.literal("Недопустимый сид: " + requested + ". Выберите корректный race seed.")
+                //         .formatted(net.minecraft.util.Formatting.RED), false);
+                //     return;
+                // }
                 
                 // ТОЛЬКО сохраняем выбор сида, НЕ телепортируем
                 HubManager.setPlayerSeedChoice(p.getUuid(), requested);
@@ -311,8 +314,9 @@ public final class RaceServerInit implements ModInitializer {
             // TPS мониторинг
             updateTPS(System.currentTimeMillis());
             
-            // Периодическая отправка ParallelPlayersPayload
-            if (tick % 40 == 0 && displayParallelPlayers) { // каждые 2 секунды
+            // Периодическая отправка ParallelPlayersPayload с адаптивной частотой
+            int updateInterval = currentTPS >= 18.0 ? 2 : (currentTPS >= 15.0 ? 4 : 6); // адаптивная частота
+            if (tick % updateInterval == 0 && displayParallelPlayers) {
                 for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
                     ServerWorld playerWorld = player.getServerWorld();
                     if (isPersonal(playerWorld)) {
@@ -347,12 +351,13 @@ public final class RaceServerInit implements ModInitializer {
                                 return;
                             }
                             
-                            // ОТЛАДКА: Логируем информацию о дымке
-                            if (tick % 200 == 0) { // каждые 10 секунд
+                            // ОТЛАДКА: Логируем информацию о дымке (реже)
+                            if (tick % 400 == 0) { // каждые 20 секунд
                                 System.out.println("[Race] Ghost debug for " + player.getName().getString() + 
                                     ": total points=" + payload.points().size() + 
                                     ", filtered points=" + filteredPoints.size() + 
-                                    ", world=" + playerWorld.getRegistryKey().getValue());
+                                    ", world=" + playerWorld.getRegistryKey().getValue() + 
+                                    ", updateInterval=" + updateInterval);
                             }
                             
                             if (!filteredPoints.isEmpty()) {
@@ -669,17 +674,31 @@ public final class RaceServerInit implements ModInitializer {
         long currentTime = System.currentTimeMillis();
         tickTimes.offer(currentTime);
         
-        // Держим только последние 20 секунд
-        while (!tickTimes.isEmpty() && (currentTime - tickTimes.peek()) > 20000) {
+        // Держим только последние 5 секунд для более точного измерения
+        while (!tickTimes.isEmpty() && (currentTime - tickTimes.peek()) > 5000) {
             tickTimes.poll();
         }
         
-        // Вычисляем TPS за последние 20 секунд
-        if (tickTimes.size() > 1) {
+        // Вычисляем TPS за последние 5 секунд с экспоненциальным сглаживанием
+        if (tickTimes.size() > 10) { // Минимум 10 тиков для точности
             long timeSpan = currentTime - tickTimes.peek();
             if (timeSpan > 0) {
-                currentTPS = Math.min(20.0, (tickTimes.size() - 1) * 1000.0 / timeSpan);
+                double rawTPS = (tickTimes.size() - 1) * 1000.0 / timeSpan;
+                rawTPS = Math.min(20.0, Math.max(0.0, rawTPS));
+                
+                // Экспоненциальное сглаживание для стабильности (коэффициент 0.1)
+                smoothedTPS = 0.1 * rawTPS + 0.9 * smoothedTPS;
+                currentTPS = smoothedTPS;
+                
+                // Дополнительное сглаживание для стабильности
+                if (currentTPS > 19.8) {
+                    currentTPS = 20.0; // Показываем 20 TPS если очень близко к идеалу
+                }
             }
+        } else {
+            // Если недостаточно данных, показываем 20 TPS
+            currentTPS = 20.0;
+            smoothedTPS = 20.0;
         }
         
         // Устанавливаем уровень производительности
@@ -721,8 +740,10 @@ public final class RaceServerInit implements ModInitializer {
                 double x = otherPlayer.getX(), y = otherPlayer.getY(), z = otherPlayer.getZ();
                 byte type = detectActivityType(otherPlayer);
                 
-                // ИСПРАВЛЕНИЕ: Добавляем только ОДНУ точку (текущее положение)
-                points.add(new race.net.ParallelPlayersPayload.Point(name, x, y, z, type));
+                // ИСПРАВЛЕНИЕ: Дополнительная проверка - не показываем дымку самого игрока
+                if (!name.equals(me.getGameProfile().getName())) {
+                    points.add(new race.net.ParallelPlayersPayload.Point(name, x, y, z, type));
+                }
             }
         }
         
@@ -749,12 +770,14 @@ public final class RaceServerInit implements ModInitializer {
     public static void personalStart(ServerPlayerEntity p, long seed) {
         java.util.UUID id = p.getUuid();
         
-        if (seed <= 0) {
-            p.sendMessage(net.minecraft.text.Text.literal("Недопустимый race seed! Настройте race setup перед стартом.")
-                .formatted(net.minecraft.util.Formatting.RED), false);
-            LOGGER.warn("[Race] Player tried to start with invalid seed: {} -> {}", p.getName().getString(), seed);
-            return;
-        }
+        // ИСПРАВЛЕНИЕ: Разрешаем отрицательные сиды как в ванильном Minecraft
+        // Убираем проверку на положительные значения
+        // if (seed <= 0) {
+        //     p.sendMessage(net.minecraft.text.Text.literal("Недопустимый race seed! Настройте race setup перед стартом.")
+        //         .formatted(net.minecraft.util.Formatting.RED), false);
+        //     LOGGER.warn("[Race] Player tried to start with invalid seed: {} -> {}", p.getName().getString(), seed);
+        //     return;
+        // }
         
         if (personalStarted.contains(id)) {
             LOGGER.info("[Race] Player already started race - skipping personal start: {}", p.getName().getString());
