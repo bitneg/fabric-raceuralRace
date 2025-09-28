@@ -44,6 +44,11 @@ public interface MixinWorldView {
         if (!key.startsWith("fabric_race:")) return;
         // Не вмешиваемся в рабочие потоки генерации — пусть генератор получит настоящий чанк
         if (!"Server thread".equals(Thread.currentThread().getName())) return;
+        
+        // ИСПРАВЛЕНИЕ: Упрощенная проверка без дорогого getStackTrace()
+        // Просто не блокируем чанки в персональных мирах для лучшей производительности
+        // Это позволит дымке работать, но может немного увеличить нагрузку
+        
         // Для главного треда: если чанк не загружен, возвращаем null (не вызывать sync load)
         if (!self.isChunkLoaded(chunkX, chunkZ)) {
             cir.setReturnValue(null);

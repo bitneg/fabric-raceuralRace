@@ -246,19 +246,13 @@ public final class RaceServerInit implements ModInitializer {
                         }
                     }
                     
-                    if (existingWorld != null) {
-                        // Найден существующий мир с этим сидом - телепортируем туда
-                        race.tp.SafeTeleport.toWorldSpawn(player, existingWorld);
-                        LOGGER.info("[Race] Player returned to existing world with same seed: {} -> {}", 
-                                  player.getName().getString(), existingWorld.getRegistryKey().getValue());
+                    // ИСПРАВЛЕНИЕ: Всегда телепортируем в хаб, если нет сохраненной позиции
+                    // Не телепортируем в миры других игроков
+                    if (race.hub.HubManager.isHubActive()) {
+                        race.hub.HubManager.teleportToHub(player);
+                        LOGGER.info("[Race] Player teleported to hub (no return point): {}", player.getName().getString());
                     } else {
-                        // Мир не найден - телепортируем в хаб
-                        if (race.hub.HubManager.isHubActive()) {
-                            race.hub.HubManager.teleportToHub(player);
-                            LOGGER.info("[Race] Player teleported to hub: {}", player.getName().getString());
-                        } else {
-                            LOGGER.warn("[Race] Hub is not active, player will spawn in default world: {}", player.getName().getString());
-                        }
+                        LOGGER.warn("[Race] Hub is not active, player will spawn in default world: {}", player.getName().getString());
                     }
                 }
             } catch (Throwable t) {
@@ -381,61 +375,26 @@ public final class RaceServerInit implements ModInitializer {
             // Периодическая отправка ParallelPlayersPayload с адаптивной частотой
             int updateInterval = currentTPS >= 18.0 ? 2 : (currentTPS >= 15.0 ? 4 : 6); // адаптивная частота
             if (tick % updateInterval == 0 && displayParallelPlayers) {
+                // ПРОСТАЯ ЛОГИКА: отправляем дымку всем игрокам
                 for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-                    ServerWorld playerWorld = player.getServerWorld();
-                    if (isPersonal(playerWorld)) {
-                        try {
-                            // ИСПРАВЛЕНИЕ: Создаем payload для параллельных миров
-                            race.net.ParallelPlayersPayload payload = buildParallelPayload(player);
-                            
-                            // ИСПРАВЛЕНИЕ: Упрощаем фильтрацию - отправляем все точки для отладки
-                            var filteredPoints = payload.points().stream()
-                                .filter(point -> {
-                                    // Проверяем, что игрок находится в ДРУГОМ мире с тем же сидом
-                                    for (ServerPlayerEntity otherPlayer : server.getPlayerManager().getPlayerList()) {
-                                        if (otherPlayer.getGameProfile().getName().equals(point.name()) && 
-                                            otherPlayer.getServerWorld() != playerWorld) {
-                                            // Проверяем, что у них одинаковый сид
-                                            long playerSeed = tryParseSeed(playerWorld.getRegistryKey());
-                                            long otherSeed = tryParseSeed(otherPlayer.getServerWorld().getRegistryKey());
-                                            if (playerSeed == otherSeed && playerSeed >= 0) {
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                    return false;
-                                })
-                                .toList();
-                            
-                            // ВРЕМЕННО: Отправляем ВСЕ точки для отладки
-                            if (filteredPoints.isEmpty() && !payload.points().isEmpty()) {
-                                System.out.println("[Race] DEBUG: Sending all points for debugging");
-                                var debugPayload = new race.net.ParallelPlayersPayload(payload.points());
-                                debugPayload.sendTo(player);
-                                return;
-                            }
-                            
-                            // ОТЛАДКА: Логируем информацию о дымке (реже)
-                            if (tick % 400 == 0) { // каждые 20 секунд
-                                System.out.println("[Race] Ghost debug for " + player.getName().getString() + 
-                                    ": total points=" + payload.points().size() + 
-                                    ", filtered points=" + filteredPoints.size() + 
-                                    ", world=" + playerWorld.getRegistryKey().getValue() + 
-                                    ", updateInterval=" + updateInterval);
-                            }
-                            
-                            if (!filteredPoints.isEmpty()) {
-                                var filteredPayload = new race.net.ParallelPlayersPayload(filteredPoints);
-                                filteredPayload.sendTo(player);
-                            }
-                        } catch (Throwable ignored) {}
-                    }
+                    try {
+                        race.net.ParallelPlayersPayload payload = buildParallelPayload(player);
+                        if (!payload.points().isEmpty()) {
+                            payload.sendTo(player);
+                        }
+                    } catch (Throwable ignored) {}
                 }
             }
             
             // Заморозка игроков
             for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
                 if (frozenUntilStart.contains(player.getUuid())) {
+                    // ИСПРАВЛЕНИЕ: Автоматически размораживаем игроков при старте гонки
+                    if (isRaceActive()) {
+                        forceUnfreezePlayer(player);
+                        continue;
+                    }
+                    
                     if (freezePos.containsKey(player.getUuid())) {
                         var pos = freezePos.get(player.getUuid());
                         if (player.getBlockPos().getSquaredDistance(pos) > 4) {
@@ -740,26 +699,22 @@ public final class RaceServerInit implements ModInitializer {
         long currentTime = System.currentTimeMillis();
         tickTimes.offer(currentTime);
         
-        // Держим только последние 5 секунд для более точного измерения
-        while (!tickTimes.isEmpty() && (currentTime - tickTimes.peek()) > 5000) {
+        // Держим только последние 3 секунды для более быстрого отклика
+        while (!tickTimes.isEmpty() && (currentTime - tickTimes.peek()) > 3000) {
             tickTimes.poll();
         }
         
-        // Вычисляем TPS за последние 5 секунд с экспоненциальным сглаживанием
-        if (tickTimes.size() > 10) { // Минимум 10 тиков для точности
+        // ИСПРАВЛЕНИЕ: Более точное вычисление TPS
+        if (tickTimes.size() > 5) { // Минимум 5 тиков для точности
             long timeSpan = currentTime - tickTimes.peek();
             if (timeSpan > 0) {
+                // Правильная формула TPS: количество тиков / время в секундах
                 double rawTPS = (tickTimes.size() - 1) * 1000.0 / timeSpan;
                 rawTPS = Math.min(20.0, Math.max(0.0, rawTPS));
                 
-                // Экспоненциальное сглаживание для стабильности (коэффициент 0.1)
-                smoothedTPS = 0.1 * rawTPS + 0.9 * smoothedTPS;
+                // Менее агрессивное сглаживание для более точного отображения
+                smoothedTPS = 0.3 * rawTPS + 0.7 * smoothedTPS;
                 currentTPS = smoothedTPS;
-                
-                // Дополнительное сглаживание для стабильности
-                if (currentTPS > 19.8) {
-                    currentTPS = 20.0; // Показываем 20 TPS если очень близко к идеалу
-                }
             }
         } else {
             // Если недостаточно данных, показываем 20 TPS
@@ -778,19 +733,34 @@ public final class RaceServerInit implements ModInitializer {
     }
     
     /**
-     * Создает payload для параллельных миров - ищет игроков в ДРУГИХ мирах с тем же сидом
+     * Получает сид игрока (из мира или из сохраненного выбора)
      */
-    private static race.net.ParallelPlayersPayload buildParallelPayload(ServerPlayerEntity me) {
-        var server = me.getServer();
+    private static long getPlayerSeed(ServerPlayerEntity player) {
+        var playerWorld = player.getServerWorld();
+        long seed = tryParseSeed(playerWorld.getRegistryKey());
+        
+        // ИСПРАВЛЕНИЕ: Если не можем получить сид из мира, пытаемся получить из сохраненного выбора игрока
+        if (seed < 0) {
+            seed = race.hub.HubManager.getPlayerSeedChoice(player.getUuid());
+        }
+        
+        return seed;
+    }
+    
+    /**
+     * Проверяет, есть ли другие игроки с тем же сидом в ДРУГИХ мирах
+     */
+    private static boolean hasParallelPlayersWithSameSeed(ServerPlayerEntity me, MinecraftServer server) {
         var myWorld = me.getServerWorld();
         long mySeed = tryParseSeed(myWorld.getRegistryKey());
         
+        // ИСПРАВЛЕНИЕ: Если не можем получить сид из мира, пытаемся получить из сохраненного выбора игрока
         if (mySeed < 0) {
-            return new race.net.ParallelPlayersPayload(new java.util.ArrayList<>());
+            mySeed = race.hub.HubManager.getPlayerSeedChoice(me.getUuid());
+            if (mySeed < 0) {
+                return false;
+            }
         }
-        
-        var points = new java.util.ArrayList<race.net.ParallelPlayersPayload.Point>();
-        long now = System.currentTimeMillis();
         
         // Ищем игроков в ДРУГИХ мирах с тем же сидом
         for (ServerPlayerEntity otherPlayer : server.getPlayerManager().getPlayerList()) {
@@ -800,19 +770,39 @@ public final class RaceServerInit implements ModInitializer {
             ServerWorld otherWorld = otherPlayer.getServerWorld();
             long otherSeed = tryParseSeed(otherWorld.getRegistryKey());
             
+            // ИСПРАВЛЕНИЕ: Если не можем получить сид из мира другого игрока, используем его сохраненный выбор
+            if (otherSeed < 0) {
+                otherSeed = race.hub.HubManager.getPlayerSeedChoice(otherPlayer.getUuid());
+            }
+            
             // Проверяем, что у них одинаковый сид
             if (otherSeed == mySeed && otherSeed >= 0) {
-                String name = otherPlayer.getGameProfile().getName();
-                double x = otherPlayer.getX(), y = otherPlayer.getY(), z = otherPlayer.getZ();
-                byte type = detectActivityType(otherPlayer);
-                
-                // ИСПРАВЛЕНИЕ: Дополнительная проверка - не показываем дымку самого игрока
-                if (!name.equals(me.getGameProfile().getName())) {
-                    points.add(new race.net.ParallelPlayersPayload.Point(name, x, y, z, type));
-                }
+                return true; // Нашли хотя бы одного игрока с тем же сидом в другом мире
             }
         }
+        return false;
+    }
+    
+    /**
+     * Создает payload для параллельных миров - простая проверка: только игроки в разных мирах
+     */
+    private static race.net.ParallelPlayersPayload buildParallelPayload(ServerPlayerEntity me) {
+        var server = me.getServer();
+        var myWorld = me.getServerWorld();
         
+        var points = new java.util.ArrayList<race.net.ParallelPlayersPayload.Point>();
+        
+        // ЕДИНСТВЕННАЯ ПРОВЕРКА: отправляем только игроков в ДРУГИХ мирах
+        for (ServerPlayerEntity otherPlayer : server.getPlayerManager().getPlayerList()) {
+            if (otherPlayer == me) continue; // не себя
+            if (otherPlayer.getServerWorld() == myWorld) continue; // не тот же мир
+            
+            String name = otherPlayer.getGameProfile().getName();
+            double x = otherPlayer.getX(), y = otherPlayer.getY(), z = otherPlayer.getZ();
+            byte type = detectActivityType(otherPlayer);
+            
+            points.add(new race.net.ParallelPlayersPayload.Point(name, x, y, z, type));
+        }
         return new race.net.ParallelPlayersPayload(points);
     }
     
@@ -942,7 +932,8 @@ public final class RaceServerInit implements ModInitializer {
 
     // Race state методы
     public static boolean isRaceActive() {
-        return active;
+        // ИСПРАВЛЕНИЕ: Проверяем оба состояния гонки - локальное и глобальное
+        return active || race.server.phase.PhaseState.isRaceActive();
     }
 
     public static long getT0Ms() { // исправляем название метода

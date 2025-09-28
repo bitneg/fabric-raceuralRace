@@ -6,6 +6,7 @@ import net.minecraft.network.codec.PacketCodec;
 import net.minecraft.network.codec.PacketCodecs;
 import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.util.Identifier;
+import net.minecraft.network.packet.CustomPayload.Id;
 
 public record RaceBoardPayload(List<Row> rows) implements CustomPayload {
     public static final Id<RaceBoardPayload> ID = new Id<>(Identifier.of("fabric_race", "board"));

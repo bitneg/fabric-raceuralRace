@@ -39,6 +39,7 @@
     "server.WorldWeatherIsolationMixin",
     "server.SimpleWeatherMixin",
     "server.WeatherBlockMixin",
+    "server.WorldFluidStateMixin",
     "vanillafix.MixinEndPortalBlock",
     "vanillafix.MixinFireBlock",
     "vanillafix.MixinFlintAndSteelItem",

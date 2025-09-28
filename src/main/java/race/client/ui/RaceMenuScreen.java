@@ -275,9 +275,9 @@ public class RaceMenuScreen extends Screen {
                         return;
                     }
                 }
-                // ИСПРАВЛЕНИЕ: При нажатии "Race" создаем параллельный мир с тем же сидом но на свободном слоте
+                // ИСПРАВЛЕНИЕ: При нажатии "Race" создаем персональный мир с тем же сидом
                 trySend("/race seed " + e.seed()); // Устанавливаем тот же сид
-                trySend("/race parallel " + e.playerName()); // Новая команда для параллельной гонки
+                trySend("/race ready"); // Готовимся к гонке
                 this.close();
             }).dimensions(buttonsX, buttonY, 60, 20).build();
             ButtonWidget joinBtn = ButtonWidget.builder(Text.literal("Join"), b -> {

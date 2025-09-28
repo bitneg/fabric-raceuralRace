@@ -37,8 +37,8 @@ public final class TickBus {
                 } catch (Throwable ignored) {}
             }
             
-            // TPS информация каждые 2 секунды
-            if (tick % TICK_2S == 0) {
+            // TPS информация каждые 20 тиков (1 секунда) для более точного отображения
+            if (tick % 20 == 0) {
                 try {
                     double currentTPS = race.server.RaceServerInit.getCurrentTPS();
                     boolean enabled = race.server.RaceServerInit.isTpsDisplayEnabled();
